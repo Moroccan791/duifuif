@@ -252,3 +252,28 @@ def test_svg_includes_the_narration_and_decision():
 def test_svg_escapes_markup():
     svg = render_svg(synthetic_candles(n=40, seed=1), title="<script>")
     assert "&lt;script&gt;" in svg
+
+
+# ---- real CSV loading -----------------------------------------------------
+def test_load_csv_reads_the_bundled_real_data():
+    from chartbot.data import load_csv
+    c = load_csv("data/btc_daily.csv")
+    assert len(c) > 3900
+    assert c[0].close > 100.0
+    assert c[-1].close > 50_000.0
+    assert all(x.low <= x.close <= x.high for x in c)
+
+
+def test_loaded_candles_are_time_ordered():
+    from chartbot.data import load_csv
+    c = load_csv("data/btc_daily.csv")
+    assert all(c[i].ts < c[i + 1].ts for i in range(len(c) - 1))
+
+
+def test_backtest_runs_on_real_data():
+    from chartbot.data import load_csv
+    c = load_csv("data/btc_daily.csv")[-1200:]
+    res = backtest(c, 100.0, RunnerConfig(signal=SignalConfig(max_vol_pct=0.12)))
+    assert res["steps"] == len(c) - 30
+    assert res["trades"] > 0
+    assert res["final"] > 0

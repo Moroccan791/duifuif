@@ -158,3 +158,63 @@ def live_replay(interval_s: float = 300.0, seed: int = 4):
 
 def now() -> float:
     return time.time()
+
+
+# ---------------------------------------------------------------------------
+# CSV loader (real historical data, no network)
+# ---------------------------------------------------------------------------
+def load_csv(path: str, interval_s: float = 86400.0) -> list[Candle]:
+    """Load OHLCV from a CSV with flexible column names.
+
+    Handles the common shapes people actually have: `Date,Open,High,Low,Close,
+    Volume`, `timestamp,o,h,l,c,v`, Binance's own kline dumps, and lower/upper
+    case variants of all of them.
+    """
+    import csv
+    import datetime as _dt
+
+    def pick(row: dict, *names: str) -> str | None:
+        low = {k.strip().lower(): v for k, v in row.items()}
+        for n in names:
+            if n in low and low[n] not in ("", None):
+                return low[n]
+        return None
+
+    def parse_ts(raw: str | None) -> float | None:
+        if raw is None:
+            return None
+        try:
+            v = float(raw)
+            return v / 1000.0 if v > 1e11 else v
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M", "%d/%m/%Y"):
+            try:
+                return _dt.datetime.strptime(raw.strip(), fmt).replace(
+                    tzinfo=_dt.timezone.utc).timestamp()
+            except ValueError:
+                continue
+        return None
+
+    out: list[Candle] = []
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        for i, row in enumerate(csv.DictReader(fh)):
+            ts = parse_ts(pick(row, "date", "time", "timestamp", "open_time", "opentime"))
+            o = pick(row, "open", "o")
+            h = pick(row, "high", "h")
+            l = pick(row, "low", "l")
+            c = pick(row, "close", "c")
+            v = pick(row, "volume", "vol", "v") or "0"
+            if None in (o, h, l, c):
+                continue
+            try:
+                out.append(Candle(
+                    ts=ts if ts is not None else float(i) * interval_s,
+                    open=float(o), high=float(h), low=float(l),
+                    close=float(c), volume=float(v),
+                ))
+            except ValueError:
+                continue
+    out.sort(key=lambda x: x.ts)
+    return out

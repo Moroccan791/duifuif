@@ -21,7 +21,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .broker import BinanceBroker, BrokerError, PaperBroker
-from .data import BinanceClient, Candle, synthetic_candles, trending_candles
+from .data import (BinanceClient, Candle, load_csv, synthetic_candles,
+                   trending_candles)
 from .reader import read_chart
 from .render import render_svg
 from .runner import Runner, RunnerConfig, backtest
@@ -29,6 +30,8 @@ from .signals import SignalConfig, evaluate
 
 
 def _candles(args) -> list[Candle]:
+    if getattr(args, "csv", ""):
+        return load_csv(args.csv, interval_s=86400.0)[-args.lookback:]
     if args.synthetic:
         return trending_candles(n=args.lookback, up=args.up, seed=args.seed)
     client = BinanceClient()
@@ -69,11 +72,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
 def _signal_cfg(args) -> SignalConfig:
     return SignalConfig(mode=getattr(args, "mode", "trend"),
                         risk_pct=getattr(args, "risk", 0.02),
-                        allow_short=not getattr(args, "no_short", False))
+                        allow_short=not getattr(args, "no_short", False),
+                        max_vol_pct=getattr(args, "max_vol", 0.02),
+                        min_vol_pct=getattr(args, "min_vol", 0.0004))
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:
-    if args.synthetic:
+    if getattr(args, "csv", ""):
+        candles = load_csv(args.csv, interval_s=86400.0)[-args.bars:]
+        first, last = str(candles[0].ts), str(candles[-1].ts)
+        print(f"loaded {len(candles)} candles from {args.csv}")
+    elif args.synthetic:
         # A random walk, not a monotonic trend: a monotonic trend pegs RSI above
         # 75 forever and the strategy correctly refuses every entry, which looks
         # like a broken bot instead of a working filter.
@@ -173,41 +182,64 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    """Serve the chart the bot is looking at, plus its current decision."""
+    import datetime as _dt
+
     state: dict = {"svg": "", "status": "starting", "log": []}
 
     def poll() -> None:
-        cfg = SignalConfig(mode=args.mode, risk_pct=args.risk)
+        cfg = SignalConfig(mode=args.mode, risk_pct=args.risk,
+                           max_vol_pct=args.max_vol, min_vol_pct=args.min_vol,
+                           allow_short=not args.no_short)
         broker = PaperBroker(args.equity)
         runner = Runner(broker, RunnerConfig(symbol=args.symbol,
                                              interval=args.interval,
                                              signal=cfg))
         client = BinanceClient()
+        use_csv = bool(getattr(args, "csv", ""))
         offline = args.synthetic
-        feed_note = "offline data (--synthetic)" if offline else ""
+        feed_note = "synthetic" if offline else ""
+
         while True:
             try:
-                if offline:
+                if use_csv:
+                    candles = load_csv(args.csv, interval_s=86400.0)[-args.lookback:]
+                elif offline:
                     candles = synthetic_candles(n=args.lookback,
                                                 seed=int(time.time()) // 5 % 997)
                 else:
                     candles = client.klines(args.symbol, args.interval, args.lookback)
+
                 step = runner.step(candles)
-                state["svg"] = render_svg(
-                    candles, step.read, step.signal,
-                    title=f"{args.symbol} {args.interval}  {time.strftime('%H:%M:%S')}")
                 eq = broker.equity(candles[-1].close)
-                note = f"  [{feed_note}]" if feed_note else ""
-                state["status"] = (f"${eq:,.2f} equity | {step.signal.describe()}{note}")
+
+                if use_csv:
+                    d = _dt.datetime.utcfromtimestamp(candles[-1].ts).strftime("%Y-%m-%d")
+                    label = f"REAL BTC - daily candles to {d}  ({len(candles)} bars)"
+                    mark = ""
+                    note = "  [real historical data from CSV]"
+                elif offline:
+                    label = f"SIMULATED {args.symbol} - NOT REAL DATA"
+                    mark = "SIMULATED DATA - NOT REAL BTC"
+                    note = "  [synthetic]"
+                else:
+                    label = f"LIVE {args.symbol} {args.interval}  {time.strftime('%H:%M:%S')}"
+                    mark = ""
+                    note = ""
+
+                state["svg"] = render_svg(candles, step.read, step.signal,
+                                          title=label, watermark=mark)
+                state["status"] = f"${eq:,.2f} equity | {step.signal.describe()}{note}"
                 if step.action:
                     state["log"].insert(0, f"{time.strftime('%H:%M:%S')} {step.action}")
                     state["log"] = state["log"][:12]
             except Exception as e:  # noqa: BLE001
-                # Keep the page alive and say why, rather than serving a blank box.
-                if not offline:
-                    feed_note = f"live feed unavailable ({type(e).__name__}), showing offline data"
+                if not offline and not use_csv:
+                    feed_note = f"live feed unavailable ({type(e).__name__})"
+                    state["status"] = f"{feed_note} - showing synthetic data"
                     offline = True
                 else:
-                    state["status"] = f"error: {e}"
+                    state["status"] = f"error: {type(e).__name__}: {e}"
             time.sleep(args.every)
 
     threading.Thread(target=poll, daemon=True).start()
@@ -215,7 +247,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             if self.path.startswith("/chart.svg"):
-                body = state["svg"].encode()
+                body = (state["svg"] or "<svg xmlns='http://www.w3.org/2000/svg'/>").encode()
                 ctype = "image/svg+xml"
             elif self.path.startswith("/api"):
                 body = json.dumps({"status": state["status"],
@@ -251,12 +283,21 @@ img{width:100%;max-width:900px;border:1px solid #262b33;border-radius:6px}
 .s{margin:12px 0;color:#9aa6b6}
 </style></head><body>
 <h1>chartbot &mdash; what the machine sees</h1>
+<div id="warn" style="display:none;background:#8a1c1c;color:#ffe0e0;padding:10px 12px;
+border-radius:6px;margin-bottom:12px;font-weight:600">
+  THIS IS NOT REAL BTC. The sandbox running this preview has no internet access to
+  Binance, so the chart is generated data. Run it on your own machine to see live candles.
+</div>
 <img id="c" src="/chart.svg">
 <div class="s">{{STATUS}}</div>
 <script>
+function mark(d){
+  document.getElementById('warn').style.display =
+    (d.status.indexOf('offline')>=0 || d.status.indexOf('unavailable')>=0) ? 'block':'none';
+}
 setInterval(()=>{document.getElementById('c').src='/chart.svg?t='+Date.now()},5000);
 setInterval(()=>{fetch('/api').then(r=>r.json()).then(d=>{
-  document.querySelector('.s').textContent=d.status;})},5000);
+  document.querySelector('.s').textContent=d.status; mark(d);})},5000);
 </script></body></html>"""
 
 
@@ -324,6 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     def common(sp):
+        sp.add_argument("--csv", default="", help="load OHLCV from a CSV instead of the network")
         sp.add_argument("--symbol", default="BTCUSDT")
         sp.add_argument("--interval", default="5m")
         sp.add_argument("--lookback", type=int, default=200)
@@ -331,6 +373,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--mode", default="trend", choices=["trend", "range", "both"])
         sp.add_argument("--risk", type=float, default=0.02)
         sp.add_argument("--no-short", action="store_true")
+        sp.add_argument("--max-vol", type=float, default=0.02, dest="max_vol",
+                        help="skip when ATR exceeds this fraction of price (0.02 = 2%%)")
+        sp.add_argument("--min-vol", type=float, default=0.0004, dest="min_vol")
         sp.add_argument("--synthetic", action="store_true", help="no network")
         sp.add_argument("--seed", type=int, default=1)
         return sp

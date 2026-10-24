@@ -14,6 +14,20 @@ They share a folder and nothing else.
 
 **Everything from here on is `chartbot`.** If `pm5m` is confusing you, ignore it.
 
+### Which market, exactly
+
+**Binance, BTC/USDT spot.** Real bitcoin. You buy BTC with dollars and sell it
+later at a different price. Profit = the price difference, minus fees.
+
+That is genuinely different from Polymarket, where you buy a *bet* ("will BTC be
+up in 5 minutes?"), it pays $1 if you are right and $0 if you are wrong, and you
+never own any bitcoin. Polymarket is parked; ignore it.
+
+The dashboard on port 8100 shows **real BTC daily candles**, 2024-10 to
+2025-09, loaded from `data/btc_daily.csv`. Earlier it showed generated data while
+labelled BTCUSDT — that was wrong and it is now either real or loudly marked
+`SIMULATED`.
+
 ---
 
 ## The strategy, in one paragraph

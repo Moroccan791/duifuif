@@ -23,7 +23,8 @@ def _scale(vals: list[float], lo: float, hi: float) -> list[float]:
 
 def render_svg(candles: list[Candle], read: ChartRead | None = None,
                signal: Signal | None = None, title: str = "",
-               width: int = W, height: int = H, show_ema: bool = True) -> str:
+               width: int = W, height: int = H, show_ema: bool = True,
+               watermark: str = "") -> str:
     n = len(candles)
     if n == 0:
         return "<svg xmlns='http://www.w3.org/2000/svg'/>"
@@ -104,6 +105,19 @@ def render_svg(candles: list[Candle], read: ChartRead | None = None,
                              f"stroke-width='1.2' stroke-dasharray='2 3'/>")
                 parts.append(f"<text x='{PAD_L+plot_w*0.55:.1f}' y='{y-3:.1f}' "
                              f"fill='{col}' font-size='9'>{lab}</text>")
+
+    # Unmistakable banner when the data is not real. A chart that looks like
+    # BTC but is generated must say so, or it is lying.
+    if watermark:
+        parts.append(
+            f"<rect x='0' y='{height/2-34:.0f}' width='{width}' height='68' "
+            f"fill='#8a1c1c' opacity='0.30'/>"
+        )
+        parts.append(
+            f"<text x='{width/2:.0f}' y='{height/2+8:.0f}' fill='#ff8f8f' "
+            f"font-size='22' font-weight='bold' text-anchor='middle' "
+            f"letter-spacing='2'>{_esc(watermark)}</text>"
+        )
 
     # title + narration
     if title:
