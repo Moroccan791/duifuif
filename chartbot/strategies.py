@@ -272,3 +272,88 @@ def compare(candles: list[Candle], cost_bps: float = 5.0,
                             candles, vol_target(pos, rets, target_vol),
                             cost_bps))
     return out
+
+
+# ---------------------------------------------------------------------------
+# multi-asset
+# ---------------------------------------------------------------------------
+def strategy_returns(candles: list[Candle], positions: list[float],
+                     cost_bps: float = 5.0) -> list[float]:
+    """Net daily returns of one strategy on one asset (one-bar lag, with costs)."""
+    closes = [c.close for c in candles]
+    out: list[float] = []
+    prev = 0.0
+    for i in range(1, len(closes)):
+        pos = positions[i - 1] if i - 1 < len(positions) else 0.0
+        r = pos * (closes[i] / closes[i - 1] - 1.0)
+        r -= abs(pos - prev) * (cost_bps / 10_000.0)
+        prev = pos
+        out.append(r)
+    return out
+
+
+def portfolio(series: dict[str, list[float]], weights: dict[str, float] | None = None,
+              start: float = 1.0) -> tuple[list[float], Metrics]:
+    """Equal-weight a set of per-asset return series, aligned by index.
+
+    Diversifying across coins is the standard answer to "you tested the one that
+    survived". Two correlated assets is weak diversification, but it is strictly
+    better than one, and the same-window comparison removes the regime confound.
+    """
+    names = [n for n in series if series[n]]
+    if not names:
+        raise ValueError("no series")
+    n = min(len(series[k]) for k in names)
+    w = weights or {k: 1.0 / len(names) for k in names}
+
+    combined = [sum(w.get(k, 0.0) * series[k][i] for k in names) for i in range(n)]
+    eq = start
+    curve = [eq]
+    peak = eq
+    max_dd = 0.0
+    for r in combined:
+        eq *= (1.0 + r)
+        curve.append(eq)
+        peak = max(peak, eq)
+        max_dd = min(max_dd, eq / peak - 1.0)
+
+    years = n / DAYS_PER_YEAR
+    cagr = (eq / start) ** (1.0 / years) - 1.0 if years > 0 and eq > 0 else 0.0
+    mean = sum(combined) / n
+    var = sum((x - mean) ** 2 for x in combined) / (n - 1) if n > 1 else 0.0
+    sd = math.sqrt(var)
+    sharpe = (mean / sd) * math.sqrt(DAYS_PER_YEAR) if sd > 0 else 0.0
+    return combined, Metrics(
+        name="portfolio", cagr=cagr, vol=sd * math.sqrt(DAYS_PER_YEAR),
+        sharpe=sharpe, max_dd=max_dd,
+        calmar=(cagr / abs(max_dd)) if max_dd < 0 else 0.0,
+        exposure=1.0, turns=0.0, final_multiple=eq / start, equity=curve,
+    )
+
+
+def returns_with_dates(candles: list[Candle], positions: list[float],
+                       cost_bps: float = 5.0) -> dict[float, float]:
+    """Same as `strategy_returns` but keyed by bar timestamp, for date alignment."""
+    closes = [c.close for c in candles]
+    out: dict[float, float] = {}
+    prev = 0.0
+    for i in range(1, len(closes)):
+        pos = positions[i - 1] if i - 1 < len(positions) else 0.0
+        r = pos * (closes[i] / closes[i - 1] - 1.0)
+        r -= abs(pos - prev) * (cost_bps / 10_000.0)
+        prev = pos
+        out[candles[i].ts] = r
+    return out
+
+
+def align_and_portfolio(dated: dict[str, dict[float, float]],
+                        start: float = 1.0) -> tuple[list[float], Metrics, int]:
+    """Portfolio across assets on the dates they all share."""
+    names = list(dated)
+    common = set(dated[names[0]])
+    for k in names[1:]:
+        common &= set(dated[k])
+    dates = sorted(common)
+    series = {k: [dated[k][d] for d in dates] for k in names}
+    combined, m = portfolio(series, start=start)
+    return combined, m, len(dates)

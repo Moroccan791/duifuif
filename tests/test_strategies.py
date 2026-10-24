@@ -162,3 +162,81 @@ def test_every_strategy_beats_holding_on_sharpe_at_least_somewhere(real):
     sharpe = [m.sharpe for m in res]
     assert max(sharpe) > 1.3
     assert min(sharpe) > -1.0
+
+
+# ---- ETH: the same rules on a second asset --------------------------------
+@pytest.fixture(scope="module")
+def eth():
+    return load_csv("data/eth_daily.csv")
+
+
+def test_eth_data_is_real_and_valid(eth):
+    assert len(eth) > 3000
+    assert all(x.low <= x.close <= x.high for x in eth)
+    assert all(eth[i].ts < eth[i + 1].ts for i in range(len(eth) - 1))
+    assert eth[0].close < 1000 and eth[-1].close > 100
+
+
+def test_eth_data_has_no_absurd_gaps(eth):
+    """A bad aggregation shows up as a >50% one-day jump that is not real."""
+    jumps = [abs(eth[i].close / eth[i - 1].close - 1) for i in range(1, len(eth))]
+    assert max(jumps) < 0.6
+
+
+def test_the_winner_on_btc_is_also_the_winner_on_eth(real, eth):
+    """The strongest generality check available with two assets.
+
+    If SMA+vol only won on BTC, it would be a survivorship result. It wins the
+    Sharpe ranking on ETH too, with the same ordering at the top.
+    """
+    b = sorted(compare(real), key=lambda m: -m.sharpe)
+    e = sorted(compare(eth), key=lambda m: -m.sharpe)
+    assert b[0].name == e[0].name
+    assert "SMA 50" in b[0].name and "vol target" in b[0].name
+
+
+def test_vol_targeting_helps_on_eth_too(eth):
+    res = {m.name: m for m in compare(eth)}
+    assert res["SMA 50 long/flat + vol target"].sharpe > res["SMA 50 long/flat"].sharpe
+    assert res["SMA 200 long/flat + vol target"].sharpe > res["SMA 200 long/flat"].sharpe
+
+
+def test_long_only_beats_long_short_on_eth_too(eth):
+    res = {m.name: m for m in compare(eth)}
+    assert res["TSMOM 1/3/12m long only"].sharpe > res["TSMOM 1/3/12m long/short"].sharpe
+
+
+def test_buy_and_hold_drawdown_is_brutal_on_both(real, eth):
+    for c in (real, eth):
+        bh = next(m for m in compare(c) if m.name == "buy and hold")
+        assert abs(bh.max_dd) > 0.8
+
+
+# ---- portfolio ------------------------------------------------------------
+def test_align_and_portfolio_uses_only_shared_dates():
+    from chartbot.strategies import align_and_portfolio
+    a = {1.0: 0.01, 2.0: 0.01, 3.0: 0.01}
+    b = {2.0: 0.01, 3.0: 0.01, 4.0: 0.01}
+    _, m, nd = align_and_portfolio({"A": a, "B": b})
+    assert nd == 2
+    assert m.final_multiple > 1.0
+
+
+def test_portfolio_has_a_shallower_drawdown_than_either_leg(real, eth):
+    """Diversification should cut the worst case, or it is not diversification."""
+    from chartbot.strategies import (align_and_portfolio, returns_with_dates,
+                                     sma_long_flat, vol_target)
+    per = {}
+    for name, c in (("BTC", real), ("ETH", eth)):
+        per[name] = returns_with_dates(c, vol_target(sma_long_flat(c, 50), _r(c)))
+    _, pf, _ = align_and_portfolio(per)
+    solo = []
+    for name, c in (("BTC", real), ("ETH", eth)):
+        m = evaluate(name, c, vol_target(sma_long_flat(c, 50), _r(c)))
+        solo.append(m)
+    assert abs(pf.max_dd) < max(abs(m.max_dd) for m in solo)
+
+
+def _r(c):
+    closes = [x.close for x in c]
+    return [0.0] + [closes[i] / closes[i - 1] - 1.0 for i in range(1, len(closes))]

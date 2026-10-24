@@ -92,6 +92,70 @@ times in 11 years with 70 of them in the first 18 months. Simplicity won.
 
 ---
 
+## Second asset: ETH, and it holds
+
+The obvious objection to everything above is: *you tested BTC, the one that
+survived.* So I built a second real series — 3,349 daily ETH candles,
+2017-08 to 2025-09, aggregated from Binance 1-minute data, $302 → $2,403.
+
+The same code, the same costs, the same period:
+
+| | BTC | ETH |
+|---|---|---|
+| **SMA 50 long/flat + vol target** | Sharpe **1.70** | Sharpe **1.22** |
+| TSMOM long only + vol target | 1.60 | 0.83 |
+| SMA 200 long/flat + vol target | 1.42 | 0.92 |
+| **buy and hold** | 1.12 | **0.70** |
+| best strategy CAGR | 40.1% | 24.3% |
+| best strategy max DD | −28.1% | −21.1% |
+| buy-and-hold max DD | −83.4% | **−94.0%** |
+
+**The ranking is the same on both assets.** SMA 50 + vol target is first on BTC
+*and* on ETH. Buy-and-hold sits below it on both. Long-only beats long/short on
+both. Vol targeting helps every strategy on both. That consistency is worth more
+than the magnitude — it is what separates a real effect from a fitted one.
+
+### Portfolio — equal weight, shared dates only
+
+2,961 shared days, 2017-08 to 2025-09:
+
+| strategy | BTC | ETH | **portfolio** | CAGR | max DD |
+|---|---|---|---|---|---|
+| SMA 50 + vol | 1.70 | 1.22 | **1.57** | 29.4% | −24.6% |
+| TSMOM + vol | 1.60 | 0.83 | **1.33** | 19.4% | −20.0% |
+| buy and hold | 1.12 | 0.70 | **0.91** | 48.5% | −87.9% |
+
+The portfolio's Sharpe sits between the two legs, as expected — BTC carried it.
+What it buys you is a −24.6% worst case instead of −87.9%.
+
+### By regime, both assets
+
+| window | BTC strat | BTC B&H | ETH strat | ETH B&H | portfolio | PF B&H |
+|---|---|---|---|---|---|---|
+| 2017–2019 | **1.76** | 0.86 | **1.21** | 0.15 | **1.37** | 0.41 |
+| 2020–2021 | **2.13** | 1.76 | 1.61 | **2.15** | **2.17** | 2.03 |
+| 2022–2025 | **1.17** | 0.98 | **0.68** | 0.26 | **1.21** | 0.52 |
+
+**Eight of nine cells favour the strategy.** The exception is honest and
+instructive: ETH during the 2020–21 alt bull run, where buy-and-hold scored 2.15
+against the strategy's 1.61. In a vertical melt-up, being out of the market half
+the time costs you. That is the price of the drawdown protection, and it is a
+real price.
+
+It also survives the regime the strictest published test found hostile
+(2022–2025, after the TSMOM decay): 1.17 on BTC and 1.21 on the portfolio,
+against 0.98 and 0.52 for holding.
+
+### Turnover
+
+BTC: ~10 trades a year, in the market 57% of days.
+ETH: ~7 trades a year, in the market 51% of days.
+
+That is why 50bps of costs barely dent it. It is the opposite of the 174-trade
+version I built by hand.
+
+---
+
 ## Robustness — the part that decides whether to believe any of it
 
 **Both halves of the sample.** Fitted on nothing, tested everywhere:
@@ -121,9 +185,10 @@ so costs barely bite — the opposite of my hand-built version.
 
 Being straight about the limits, because this is where people fool themselves:
 
-1. **One asset, one sample.** BTC is the crypto that survived. A strategy tested
-   only on the winner is exactly the "young market artifact" the sceptics warn
-   about. The honest test needs ETH, SOL, and cross-sectional work — not done.
+1. **Two assets, and both are the survivors.** ETH helps, but ETH and BTC are
+   correlated and both had enormous bull runs inside the sample. This is better
+   than one asset, not enough. The honest test still wants SOL, and a
+   cross-sectional version that does not depend on picking winners.
 2. **Buy-and-hold's 330× is in the sample.** A long-biased filter over the
    greatest bull run in the asset's history will look good. It may look much
    worse over the next decade, and probably will.

@@ -127,41 +127,82 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
 def cmd_compare(args: argparse.Namespace) -> int:
     """Run every documented strategy on the same data with the same costs."""
-    from .strategies import compare
+    from .strategies import (align_and_portfolio, compare, returns_with_dates,
+                             sma_long_flat, tsmom, vol_target)
 
-    if args.csv:
-        candles = load_csv(args.csv, interval_s=86400.0)
-        src = args.csv
-    else:
-        candles = BinanceClient().klines(args.symbol, args.interval, args.bars)
-        src = f"{args.symbol} {args.interval}"
+    paths = [p.strip() for p in args.csv.split(",") if p.strip()]
+    if not paths:
+        paths = [""]
 
-    print("=" * 84)
-    print(f"STRATEGY COMPARISON - {len(candles)} bars from {src}")
-    print("=" * 84)
-    print(f"costs {args.cost_bps:.0f} bps per unit turnover, "
-          f"vol target {args.target_vol*100:.0f}%, 365 trading days/year")
-    print()
+    frames: dict[str, list] = {}
+    for pth in paths:
+        if pth:
+            candles = load_csv(pth, interval_s=86400.0)
+            name = pth.rsplit("/", 1)[-1].split(".")[0].upper()
+        else:
+            candles = BinanceClient().klines(args.symbol, args.interval, args.bars)
+            name = args.symbol
+        frames[name] = candles
 
-    res = compare(candles, cost_bps=args.cost_bps, target_vol=args.target_vol)
-    res.sort(key=lambda m: -m.sharpe)
-    hdr = (f"{'strategy':<32} {'CAGR':>9} {'vol':>8} {'Sharpe':>7} "
-           f"{'MaxDD':>9} {'exposed':>8}")
-    print(hdr)
-    print("-" * len(hdr))
-    for m in res:
-        print(m.pretty())
+    for name, candles in frames.items():
+        res = compare(candles, cost_bps=args.cost_bps, target_vol=args.target_vol)
+        res.sort(key=lambda m: -m.sharpe)
+        print("=" * 86)
+        print(f"{name} - {len(candles):,} bars, {args.cost_bps:.0f}bps, "
+              f"vol target {args.target_vol*100:.0f}%")
+        print("=" * 86)
+        hdr = (f"{'strategy':<34} {'CAGR':>9} {'vol':>8} {'Sharpe':>7} "
+               f"{'MaxDD':>9} {'exposed':>8}")
+        print(hdr)
+        print("-" * len(hdr))
+        for m in res:
+            print(m.pretty())
+        bh = next((m for m in res if m.name == "buy and hold"), None)
+        if bh:
+            print(f"\n  best: {res[0].name}   Sharpe {res[0].sharpe:.2f} "
+                  f"vs {bh.sharpe:.2f} holding")
+            print(f"        drawdown {res[0].max_dd*100:.1f}% vs {bh.max_dd*100:.1f}%")
+        print()
 
-    print()
-    bh = next((m for m in res if m.name == "buy and hold"), None)
-    if bh:
-        best = res[0]
-        print(f"  best by Sharpe: {best.name}")
-        print(f"    Sharpe {best.sharpe:.2f} vs {bh.sharpe:.2f} for holding BTC")
-        print(f"    max drawdown {best.max_dd*100:.1f}% vs {bh.max_dd*100:.1f}%")
-        print(f"    CAGR {best.cagr*100:.1f}% vs {bh.cagr*100:.1f}%  "
-              f"- holding made MORE money, it just hurt more getting there")
+    if len(frames) < 2:
+        return 0
+
+    # Portfolio across the assets, on the dates they all share.
+    variants = {
+        "SMA 50 long/flat + vol": lambda c: vol_target(
+            sma_long_flat(c, 50), _rets(c)),
+        "TSMOM long only + vol": lambda c: vol_target(
+            tsmom(c, allow_short=False), _rets(c)),
+        "buy and hold": lambda c: [1.0] * len(c),
+    }
+
+    print("=" * 86)
+    print("PORTFOLIO - equal weight, only dates every asset shares")
+    print("=" * 86)
+    print(f"{'strategy':<26} " + "".join(f"{n+' Sharpe':>12}" for n in frames)
+          + f"{'PORTFOLIO':>11}{'CAGR':>9}{'MaxDD':>9}")
+    print("-" * 86)
+    for label, fn in variants.items():
+        per = {n: returns_with_dates(c, fn(c), args.cost_bps)
+               for n, c in frames.items()}
+        _, pf, nd = align_and_portfolio(per)
+        cells = []
+        for n in frames:
+            idx = sorted(per[n])
+            vals = [per[n][d] for d in idx]
+            k = len(vals)
+            mean = sum(vals) / k
+            var = sum((x - mean) ** 2 for x in vals) / (k - 1)
+            cells.append(f"{(mean / var**0.5) * (365 ** 0.5):>12.2f}")
+        print(f"{label:<26} " + "".join(cells)
+              + f"{pf.sharpe:>11.2f}{pf.cagr*100:>8.1f}%{pf.max_dd*100:>8.1f}%")
+    print(f"\n  {nd} shared days across {len(frames)} assets")
     return 0
+
+
+def _rets(candles):
+    closes = [x.close for x in candles]
+    return [0.0] + [closes[i] / closes[i - 1] - 1.0 for i in range(1, len(closes))]
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -404,7 +445,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     def common(sp):
-        sp.add_argument("--csv", default="", help="load OHLCV from a CSV instead of the network")
+        sp.add_argument("--csv", default="",
+                        help="CSV path, or comma-separated paths for a portfolio")
         sp.add_argument("--symbol", default="BTCUSDT")
         sp.add_argument("--interval", default="5m")
         sp.add_argument("--lookback", type=int, default=200)
