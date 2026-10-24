@@ -1,16 +1,18 @@
 """Dashboard: the graphs.
 
-The user's objection was fair -- everything so far has been terminal tables. This
-serves a live page instead, and the centrepiece chart is the one that actually
-decides these markets:
+Everything before this was terminal tables. This serves a live page instead, and
+the centrepiece chart is the one that actually decides these markets:
 
-    the SETTLEMENT PRICE IS THE AVERAGE OF THE PATH, NOT THE LAST TICK.
+    UP  iff  TWAP60(close) >= TWAP60(open)
+
+A trailing 60-second mean at each end -- not the last tick, and not the average
+of the whole path. Both ends are drawn: the spot path, the rolling TWAP60 that
+settles it, and the strike. You can see window after window where spot finishes
+on one side of the strike and the market resolves on the other, because the mean
+of the last minute is what counts.
 
 That single fact is invisible on a normal price chart and is the entire basis of
-the strategy. The dashboard draws the path, the running average, the open price,
-and the outcome, so you can see a window where spot finishes DOWN but the market
-resolves UP. That is the edge, in one picture, and no amount of table-reading
-conveys it as quickly.
+the strategy. No amount of table-reading conveys it as quickly as one picture.
 
 Everything is stdlib + canvas. No CDN, no build step, no external assets, so it
 works offline and inside a preview iframe.
@@ -34,38 +36,56 @@ from .expectancy import analyze
 # snapshot building
 # ---------------------------------------------------------------------------
 def _synthetic_windows(n: int = 8, seed: int = 7, sigma: float = 2.2e-4) -> list[dict[str, Any]]:
-    """Windows where the path average and the final tick disagree.
+    """Windows where the real settlement rule and the last tick disagree.
 
-    Deliberately selected to show the disagreement: a naive spot-watcher would
-    call several of these wrong. Real recorded data replaces this entirely once
-    `pm5m record` has run.
+    Under `Up iff TWAP60(close) >= TWAP60(open)`, the resolving quantity is a
+    trailing 60s mean at each end -- not the whole-path average, and not the last
+    print. These windows are selected so that a spot-watcher would call at least
+    some of them wrong.
+
+    The path starts 60s before the window so the *open* TWAP has real history;
+    that pre-window stretch is what makes the strike differ from the first tick.
     """
     rng = random.Random(seed)
-    out = []
+    out: list[dict[str, Any]] = []
     tries = 0
-    while len(out) < n and tries < n * 300:
+    step = 5.0
+    pre = 12          # 60s of pre-window history
+    post = 60         # 300s of window
+    while len(out) < n and tries < n * 400:
         tries += 1
         spot0 = 100_000.0
         path = [spot0]
-        for _ in range(60):
+        for _ in range(pre + post):
             path.append(
-                path[-1] * math.exp(-0.5 * sigma**2 * 5 + sigma * math.sqrt(5) * rng.gauss(0, 1))
+                path[-1] * math.exp(-0.5 * sigma**2 * step + sigma * math.sqrt(step) * rng.gauss(0, 1))
             )
-        avg = sum(path[1:-1]) * 5 + 0.5 * (path[0] + path[-1]) * 5
-        avg /= 5 * (len(path) - 1)
-        resolved_up = avg >= path[0]
-        ends_up = path[-1] >= path[0]
-        if resolved_up == ends_up:
+
+        def twap_at(idx: int, window: int = 12) -> float:
+            lo = max(0, idx - window + 1)
+            return sum(path[lo:idx + 1]) / (idx + 1 - lo)
+
+        # t=0 is index `pre`. Strike = TWAP60 at the open; settle = TWAP60 at the close.
+        strike = twap_at(pre)
+        settle = twap_at(pre + post)
+        last = path[pre + post]
+        resolved_up = settle >= strike
+        naive_up = last >= strike
+        if resolved_up == naive_up:
             continue  # keep only the disagreements; they are the teaching cases
+
+        twap_line = [twap_at(i) for i in range(pre, pre + post + 1)]
         out.append(
             {
                 "slug": f"btc-updown-5m-{1750000000 + tries * 300}",
-                "path": [round(p, 2) for p in path],
-                "open": round(path[0], 2),
-                "close": round(path[-1], 2),
-                "average": round(avg, 2),
+                "path": [round(p, 2) for p in path[pre:]],
+                "twap": [round(v, 2) for v in twap_line],
+                "open": round(strike, 2),
+                "last_tick": round(path[pre], 2),
+                "close": round(last, 2),
+                "settle": round(settle, 2),
                 "outcome": "up" if resolved_up else "down",
-                "naive_would_say": "up" if ends_up else "down",
+                "naive_would_say": "up" if naive_up else "down",
             }
         )
     return out
@@ -255,9 +275,10 @@ PAGE = """<!doctype html>
 
   <div class="panel">
     <h2>The graph that decides these markets</h2>
-    <p class="cap">Settlement is the <b>average of the path</b>, not the last tick. In each window below,
-    spot and the average disagree — so the market resolves against what a price-chart watcher would
-    have called. Green line = running average; dashed = open price.</p>
+    <p class="cap">Settlement is <b>TWAP60(close) vs TWAP60(open)</b> — a trailing 60-second mean
+    at each end, not the last tick. In each window below the two disagree, so the market resolves
+    against what a price-chart watcher would have called. Green = spot path; white = rolling TWAP60;
+    dashed = the strike.</p>
     <div class="wgrid" id="windows"></div>
   </div>
 
@@ -429,14 +450,15 @@ function drawWindow(cell, win, idx){
   for(let i=1;i<p.length;i++) x.lineTo(X(i),Y(p[i]));
   x.strokeStyle=(win.outcome==='up')?COL.good:COL.bad; x.lineWidth=1.5; x.stroke();
 
+  const tw = win.twap || p.map(()=>win.open);
   x.beginPath();
-  for(let i=0;i<p.length;i++){ const y=Y(win.average); i?x.lineTo(X(i),y):x.moveTo(X(i),y); }
-  x.strokeStyle='#ffffff'; x.globalAlpha=0.55; x.lineWidth=1.5; x.stroke(); x.globalAlpha=1;
+  for(let i=0;i<tw.length;i++){ const y=Y(tw[i]); i?x.lineTo(X(i),y):x.moveTo(X(i),y); }
+  x.strokeStyle='#ffffff'; x.globalAlpha=0.75; x.lineWidth=1.6; x.stroke(); x.globalAlpha=1;
 
   x.fillStyle=COL.ink; x.font='10px ui-monospace'; x.textAlign='left';
-  x.fillText('open '+win.open.toFixed(0), pad.l, pad.t+9);
-  x.fillText('avg  '+win.average.toFixed(0), pad.l, pad.t+21);
-  x.fillText('last '+win.close.toFixed(0), pad.l, pad.t+33);
+  x.fillText('strike '+win.open.toFixed(0), pad.l, pad.t+9);
+  x.fillText('twap60 '+win.settle.toFixed(0), pad.l, pad.t+21);
+  x.fillText('last   '+win.close.toFixed(0), pad.l, pad.t+33);
   x.fillText('t='+idx, w-pad.r-26, pad.t+9);
 }
 

@@ -107,10 +107,13 @@ def test_quotes_stay_inside_the_configured_band():
 
 def test_quotes_rest_below_the_ask_and_above_the_bid():
     s = _maker_settings()
-    # A small cushion puts fair value around 55c, inside the band.
-    state = _state(100_005.0)
+    # Cushion needed is much larger than it looks. At t=150 the settlement SD is
+    # spot*sigma*sqrt(260-150) ~= $105 on $100k, so a $5 gap is a 0.05-sigma
+    # move worth 51.9c -- NOT the 55c the old (wrong) window-average model
+    # reported. Fair value sits inside the book at ~55.7c only around +$15.
+    state = _state(100_015.0)
     books = _books(ask_up=0.56, ask_dn=0.46, bid_up=0.53, bid_dn=0.43)
-    qs = plan_quotes(_market(), state, books, 100_005.0, 1e-4, START + 150, s)
+    qs = plan_quotes(_market(), state, books, 100_015.0, 1e-4, START + 150, s)
     assert qs
     for q in qs:
         book = books[q.side]
@@ -192,8 +195,9 @@ def test_engine_maker_mode_fills_without_fee_and_only_once():
     mk = _market()
     e.on_market(mk)
 
+    # +$15 cushion -> fair value ~55.7c, inside the 0.53/0.56 book.
     for t in range(0, 160, 2):
-        e.on_spot(START + t, 100_005.0)
+        e.on_spot(START + t, 100_015.0)
     # Book wide, then tighten the ask down onto whatever we quoted.
     e.on_book(_books(0.56, 0.46, 0.50, 0.40)["up"], "up", mk.slug)
     e.on_book(_books(0.56, 0.46, 0.50, 0.40)["down"], "down", mk.slug)

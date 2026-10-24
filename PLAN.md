@@ -1,8 +1,26 @@
 # PLAN — a working BTC 5-minute system
 
-Status: analysis only. Nothing here is code. Every claim is either measured in
-this repo, quoted from Polymarket's own documentation, or taken from published
-research — and the provenance is marked.
+Status: **Phase 0 complete; Phase 2a blocked on data access.** Every claim is
+either measured in this repo, quoted from Polymarket's own documentation, or
+taken from published research — and the provenance is marked.
+
+> ### Phase 0 result (the one that mattered)
+>
+> The settlement rule was wrong, and it was wrong in the *flattering* direction.
+> Correcting it to `Up iff TWAP60(close) >= TWAP60(open)` and re-running the
+> adversarial simulator **destroyed the simulated edge**: the maker-with-a-
+> spot-watching-counterparty scenario went from **+16.8% to −5.5%** on 300
+> windows, and the stale-book scenario from **+27.0% to −55.8%** on 4 trades.
+>
+> That is a good outcome, not a bad one. The profit was produced by a rule that
+> does not exist. Under the real rule a 60-second trailing mean tracks spot
+> closely over 5 minutes, so a counterparty who prices "spot vs strike" is
+> nearly right — there is no large structural gap there to farm. Whatever edge
+> exists is smaller and more specific than the plan originally hoped, and it is
+> now measured against a correct model instead of a fake one.
+>
+> Full detail: `FINDINGS.md`. Code: `pm5m/twap.py`, `pm5m/phase2.py`,
+> `python -m pm5m phase2`.
 
 ---
 

@@ -36,6 +36,61 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_phase2(args: argparse.Namespace) -> int:
+    """Phase 2: validate the settlement model, then look for edge vs the book."""
+    from .history import Cache, Window, attach_spot, fetch_binance_1s, fetch_gamma_windows, synthetic_windows
+    from .phase2 import analyse
+
+    cache = Cache()
+    print("=" * 96)
+    print("PHASE 2 — the decisive test")
+    print("=" * 96)
+
+    if args.fixture:
+        windows = synthetic_windows(
+            n=args.windows, edge_bps=args.edge_bps, market_edge_bps=args.market_edge
+        )
+        print(f"using SYNTHETIC windows (n={len(windows)}, injected edge {args.edge_bps} bp)\n")
+    else:
+        if cache.has("windows.csv"):
+            windows = cache.load_windows("windows.csv")
+            print(f"loaded {len(windows)} windows from cache\n")
+        else:
+            print("fetching closed 5m windows from Gamma ...")
+            windows = fetch_gamma_windows(max_pages=args.pages)
+            if not windows:
+                print(
+                    "no windows fetched. Either the endpoint is unreachable from "
+                    "this machine, or the response shape changed.\n"
+                    "Try --fixture to exercise the analysis offline."
+                )
+                return 1
+            cache.save_windows("windows.csv", windows)
+            print(f"fetched and cached {len(windows)} windows\n")
+
+        if cache.has("klines.json") and cache.has("klines_span.json"):
+            span = cache.load_json("klines_span.json")
+            klines = [(int(t), float(p)) for t, p in cache.load_json("klines.json")]
+            print(f"loaded {len(klines)} klines ({span} layers) from cache")
+        else:
+            print("fetching Binance 1s klines (this is the slow part) ...")
+            lo = int(min(w.start_ts for w in windows) * 1000) - 120_000
+            hi = int(max(w.end_ts for w in windows) * 1000)
+            klines = fetch_binance_1s(lo, hi)
+            if klines:
+                cache.save_json("klines.json", klines)
+                cache.save_json("klines_span.json", f"{len(klines)} candles")
+                print(f"fetched {len(klines)} klines")
+            else:
+                print("no klines fetched; cannot score the proxy")
+                return 1
+        attach_spot(windows, klines)
+
+    report = analyse(windows)
+    print(report.pretty())
+    return 0
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Serve the cockpit. Graphs, not tables."""
     from .dashboard import DashboardServer
@@ -420,7 +475,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
             _band_settings("maker", 0.50, 0.60),
             dict(counterparty="naive_spot", basis_sd=2e-5, sigma_noise_sd=0.5,
                  counterparty_noise_cents=1.5),
-            "THE HYPOTHESIS: the book ignores that settlement is an average",
+            "the book prices spot-vs-strike and ignores the trailing 60s average",
         ),
         (
             "D. MAKER in 50-60c, slightly stale counterparty",
@@ -447,11 +502,16 @@ def cmd_demo(args: argparse.Namespace) -> int:
     print(
         "How to read this:\n"
         "  A and B are the verdict on mid-range trading with an informed book.\n"
-        "  C and D are the only worlds where 50-60c works, and they require the\n"
-        "  counterparty to be systematically wrong. E shows that even when they\n"
-        "  are wrong, paying the taker fee at 55c eats a large share of it.\n"
-        "  Whether C or D resembles reality is not a modelling question -- it is\n"
-        "  what `record` and `backtest` exist to answer, using your own fills."
+        "  C, D and E let the counterparty be wrong in a specific way.\n"
+        "\n"
+        "  IMPORTANT: under the correct rule (TWAP60 at BOTH ends) a spot-watcher\n"
+        "  is much closer to right than the old window-average rule implied -- a\n"
+        "  60s trailing mean tracks spot closely over 5 minutes. Against the old,\n"
+        "  wrong rule C and D looked profitable. That profit was an artifact of a\n"
+        "  settlement rule that does not exist. Do not expect it to return.\n"
+        "\n"
+        "  Whether any of these resembles reality is not a modelling question.\n"
+        "  It is what `phase2`, `record` and `backtest` exist to answer."
     )
     return 0
 
@@ -612,6 +672,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    p2 = sub.add_parser("phase2", help="validate the settlement model and test for edge")
+    p2.add_argument("--fixture", action="store_true", help="use synthetic windows, no network")
+    p2.add_argument("--windows", type=int, default=2000)
+    p2.add_argument("--pages", type=int, default=40)
+    p2.add_argument("--edge-bps", type=float, default=0.0, dest="edge_bps",
+                    help="make the MODEL wrong by this many bp")
+    p2.add_argument("--market-edge", type=float, default=0.0, dest="market_edge",
+                    help="make the BOOK cheap by this many bp")
+    p2.set_defaults(func=cmd_phase2)
 
     dash = sub.add_parser("dashboard", help="serve the visual cockpit")
     dash.add_argument("--port", type=int, default=8000)

@@ -271,20 +271,48 @@ precisely what fools people.
 
 ### But the normal price chart is the WRONG chart here
 
-This is the part that is specific to these markets, and it is now drawn
-explicitly. Settlement compares **the average of the path** against the open —
-not the last tick. So a window can finish above the open and still resolve Down:
+This is the part specific to these markets. The rule is
 
 ```
-open 100,000 | average  99,967 | last 100,399  ->  RESOLVED DOWN (chart says UP)
-open 100,000 | average 100,038 | last  99,956  ->  RESOLVED UP   (chart says DOWN)
-open 100,000 | average 100,191 | last  99,890  ->  RESOLVED UP   (chart says DOWN)
+Up  iff  TWAP60(close) >= TWAP60(open)          (ties go Up)
 ```
 
-**Every one of those is a trade a candlestick watcher loses and this model wins.**
-That is the entire edge, and it is invisible on a standard price chart. The
-dashboard draws the path, the running average, the open line, and the resolution
-side by side so the disagreement is unmissable.
+Both ends are Chainlink's 60-second **lookback** average, not spot prints. So the
+thing to watch is not "where is spot now" but **the trailing 60s mean relative to
+the strike** — and it is a slow object that has already been 80% taken by the
+time the window ends. That is why the last few seconds cannot flip a decided
+market.
+
+An earlier version of this README described settlement as the average of the
+whole 300s path. **That rule does not exist.** It was replaced in `pm5m/twap.py`.
+It mattered: the fake rule gave the window's early prices weight they never have,
+and it made outcomes settle gradually instead of converging in the last minute.
+Both errors made the market look easier than it is.
+
+What the correct rule actually gives you, on $100k BTC with 3% daily vol
+(sigma_settle ≈ 0.165% ≈ $165):
+
+| gap `g` = spot − strike | z = g/σ | fair P(Up) | edge vs a 50¢ book |
+|---|---|---|---|
+| $0 | 0.00 | 50.0% | 0.0pp |
+| $25 | 0.15 | 56.0% | +6.0pp |
+| $50 | 0.30 | 61.9% | +11.9pp |
+| $100 | 0.61 | 72.8% | +22.8pp |
+| $165 | 1.00 | 84.2% | +34.2pp |
+| $250 | 1.52 | 93.6% | +43.6pp |
+
+The variance of the settlement collapses as the window runs —
+`Var(L) = 260, 200, 140, 80, 20` seconds of sigma² at t = 0, 60, 120, 180, 240 —
+which is the same table read as "how much a given gap is worth, over time".
+
+**This table is only as good as your strike.** Gamma publishes the true
+`priceToBeat`; if you infer it from a spot feed, every row above is wrong by the
+size of the inference error. `python -m pm5m phase2` measures that error before
+it measures anything else, and refuses to report an edge if the proxy is too
+noisy.
+
+The dashboard draws the path, the strike line, and the resolution side by side so
+the disagreement is visible.
 
 Once `pm5m record` has run, the dashboard reads real settlements from the store
 and marks its data source `store` instead of `demo`.
