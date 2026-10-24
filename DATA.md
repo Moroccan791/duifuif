@@ -219,3 +219,72 @@ If Phase 2 passes, that will mean: *the edge existed for 71 days under the
 current rules, out of sample, after fees, with a conservative fill model.* That
 is a genuinely strong statement — stronger than most retail systems can make —
 and it will still not be a promise about tomorrow.
+
+---
+
+## 7. "Why do we need Binance if we trade on Polymarket?"
+
+Because **a Polymarket 5-minute market has no price of its own.**
+
+The order book is a bet *about* BTC. It tells you what other traders believe;
+it contains zero information about where BTC actually is. If the book says 50/50
+and BTC has moved $100 in the last minute, the book is either right (the crowd
+knows something) or wrong (the crowd is anchored on a chart that lags the
+strike). **You cannot tell which without your own measurement of BTC.** That
+measurement comes from a spot feed.
+
+The answer key lives outside Polymarket. Settlement is decided by Chainlink's
+BTC/USD TWAP — an external oracle. Polymarket only publishes the verdict.
+
+### But the answer splits three ways
+
+| use | what to use | why |
+|---|---|---|
+| **backtest** — the strike | **Gamma `eventMetadata.priceToBeat`** | Polymarket publishes the *actual* strike per market. No approximation needed. |
+| **backtest** — the spot path | **Binance 1s klines** (`data.binance.vision`, free) | we need the 60s of price history *before* each open to compute `g`; Gamma can't give a spot path |
+| **live** — the strike | **PolyBolt `price.crypto.twap`** = the real Chainlink 60s TWAP | must be the actual settlement input, not a proxy |
+
+So the answer is: **we need the underlying price, yes — but not necessarily
+Binance, and definitely not Binance for live trading.**
+
+### The detail that makes this operationally important
+
+Polymarket **does not tell you the strike while you can still trade on it**:
+
+* `eventMetadata.priceToBeat` is published only **30–300 s after the market
+  closes**
+* `finalPrice` appears about **6–7 minutes** after
+
+Which means at the moment a window opens, the strike is **not readable from any
+Polymarket API**. To know it live you must subscribe to the Chainlink TWAP feed
+yourself. That is not a convenience — it is the entire operational requirement of
+H1, and it disqualifies anyone trading off the Polymarket UI.
+
+### The free gift: Gamma lets us *measure* our proxy error
+
+Two facts combine nicely:
+
+1. `priceToBeat[n] == finalPrice[n-1]`, bit-for-bit — it is the same TWAP at the
+   boundary between consecutive markets.
+2. Gamma publishes both, historically, for every market.
+
+So for the backtest we can reconstruct the **true strike series** from Gamma, and
+then check our Binance-derived 60s-average proxy against it. That converts basis
+risk from an assumption into a **measured number** — which is exactly what
+`PLAN.md` Phase 2a needs, and it costs nothing.
+
+**Revised 2a data plan:**
+
+```
+strike_true  <- Gamma eventMetadata.priceToBeat      (exact, published)
+spot_path    <- Binance 1s klines around each open   (free, complete)
+strike_proxy <- mean(spot_path[-60s:])               (our approximation)
+```
+
+Then measure `|strike_proxy − strike_true|` in basis points. If that error is
+small relative to `σ_settle ≈ 0.165%`, the proxy is safe for research. If it is
+not, H1 cannot be tested with Binance data and we need Chainlink history.
+
+That single calibration curve is worth more than any backtest that skips it.
+
+---
