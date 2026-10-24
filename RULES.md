@@ -252,6 +252,53 @@ Being straight about the limits, because this is where people fool themselves:
 
 ---
 
+## What $100 actually does
+
+Percentages hide the thing being asked. This is the same strategy, the same
+costs (0.1% fee + 2bp slippage), run through the **live** runner with $100 of
+starting equity on the real CSVs.
+
+| asset | span | $100 became | per year | per day | worst drawdown | fills |
+|---|---|---|---|---|---|---|
+| BTC | 10.8 yr | **$4,127** | +41.2% | +$1.02 | −$33.33 | 252 |
+| ETH | 9.0 yr | **$720** | +24.6% | +$0.19 | −$26.25 | 193 |
+| SOL | 6.0 yr | **$501** | +30.9% | +$0.18 | −$26.90 | 144 |
+
+Fees over that whole span: $157 on BTC, $21 on ETH, $13 on SOL. At this
+turnover (≈23 fills/yr) cost is about 1.4%/yr of the average balance — real,
+but not the thing that decides the outcome.
+
+**One path is luck, so here is every one-year window in the history.** Start
+$100 on each of ~3,500 dates and hold for a year:
+
+| asset | worst | p10 | median | p90 | best | ended down |
+|---|---|---|---|---|---|---|
+| BTC | $72 | $97 | **$148** | $203 | $259 | 13.0% |
+| ETH | $79 | $96 | **$120** | $180 | $236 | 13.6% |
+| SOL | $79 | $92 | **$111** | $192 | $213 | 25.8% |
+
+So the honest middle of the distribution is **+11% to +48% in a year**, and
+roughly **one year in eight loses money** even in a sample where all three coins
+went up between 8× and 330×. Never present the 41% as the expectation; the
+median year, and the 13% loss rate, are the expectation.
+
+Bootstrapped 30-day windows from the BTC return series (50,000 paths, $100
+start): median **$102.68**, p10 $95.53, p90 $111.07, p99 $120.12. You end the
+month down **32.1%** of the time. The chance of making $300 in that month —
+i.e. $20/day — is **0.000%** (no path in 50,000 reached it).
+
+### What that means for the $10–20/day target
+
+$15/day on $100 of capital is 15% **per day**, every day, forever. The strategy
+earns 41% per **year**. Those are not the same order of magnitude, and no
+position sizing, stop loss or signal fixes it: the constraint is capital, not
+edge.
+
+At a sustained +41%/yr — the best of the three assets, in the most favourable
+sample available — $15/day needs roughly **$13,300** of capital. At a more
+defensible +15%/yr, about **$36,500**. Both assume you never draw the account
+down along the way.
+
 ## What changed in the bot
 
 The old signals (RSI gates, pullback entries, 1.2×ATR stops) are kept for
@@ -282,6 +329,37 @@ caught this, and it is now in `tests/test_position.py`.
 
 A second bug fell out of writing that test: closing a position exactly to flat
 silently discarded the realised PnL. Both are fixed and pinned.
+
+### Three more, found only by asking "what would $100 have done?"
+
+Sizing the question in dollars — rather than in percentages — exposed a class of
+bug that percentages cannot show, because these three all cost *exposure* rather
+than *return per trade*. On $100 the bot turned in **$107 after 10.8 years**
+(+0.6%/yr) while claiming 41%. Corrected, the same code returns **$4,127**.
+
+1. **A risk cap vetoed orders instead of shrinking them.** The default limit
+   refuses any order above 50% of equity. When realised vol fell to 24% the
+   target went to 100% of equity, so the order was refused — and refused again
+   on the next bar, and every bar after, because the target never changed. The
+   bot sat flat through an entire recovery while its own state printed
+   "target 1.00". A cap has to *size* the order, not reject it.
+2. **The daily-loss halt was permanent.** The trading day was only rolled inside
+   the order methods, so a halt blocked the trades that would have rolled the
+   day that caused it. Deadlock: one bad day, dead for good. 3,179 of 3,938 bars
+   were spent halted. The calendar now advances at the top of every bar.
+3. **`halted()` valued an open position at its entry price**, because `equity()`
+   fell back to `position.entry` when no mark was given. Daily P&L was therefore
+   partly a function of *where you bought*, not what the market did — it reported
+   an 8.6% loss on a bar that had not moved. The broker now tracks a mark.
+
+All three are pinned by tests, and `run` uses one `RiskLimits` for both paper and
+live so the two cannot diverge silently. Paper mode and live mode now differ only
+in where the fill comes from.
+
+**The general lesson:** the backtest, the live runner and the risk layer were
+each individually correct and mutually inconsistent. Tests that check one layer
+at a time passed throughout. The inconsistency only surfaced when a dollar
+amount was pushed through all three.
 
 ---
 

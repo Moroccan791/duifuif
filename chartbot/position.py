@@ -83,7 +83,28 @@ class PositionRunner:
     def step(self, candles: list[Candle], ts: float | None = None) -> PositionState:
         price = candles[-1].close
         ts = ts if ts is not None else candles[-1].ts
+        # Roll the calendar BEFORE anything reads `halted()`. Yesterday's close is
+        # the right opening mark: comparing today's equity to today's own close
+        # would report zero daily P&L and never trip the limit either.
+        prev = candles[-2].close if len(candles) > 1 else price
+        self.broker.begin_bar(ts, mark=prev)
+        self.broker.mark_to(price)
+
         target, ma, vol = self.target_position(candles)
+
+        # Respect the broker's hard notional cap by *sizing to it*, never by
+        # trying an order that gets rejected. A rejected order leaves the bot
+        # flat while its target stays high, so it retries and is rejected every
+        # single bar -- silently flat for years, which is exactly what a $100
+        # account did at BTC's 2021 lows: vol collapsed to 24%, the target went
+        # to 100% of equity, the 50% cap refused it, and the bot sat out the
+        # entire recovery.
+        cap = self.broker.limits.max_notional_pct
+        clipped = ""
+        if target > cap:
+            clipped = f" (target cut from {target:.2f} by the {cap:.0%} notional cap)"
+            target = cap
+
         current = self.current_position(price)
 
         state = PositionState(ts=ts, price=price, sma=ma, vol=vol,
@@ -100,13 +121,13 @@ class PositionRunner:
         # Only act on a meaningful change. Rebalancing on every tick would turn a
         # 10-trade-a-year strategy into a fee machine.
         if abs(delta) < self.cfg.rebalance:
-            state.note = f"holding ({current:.2f} vs target {target:.2f})"
+            state.note = f"holding ({current:.2f} vs target {target:.2f}){clipped}"
             self.history.append(state)
             return state
 
         notional_delta = abs(delta) * equity
         if notional_delta < self.cfg.min_trade_usd:
-            state.note = "below minimum trade size"
+            state.note = f"below minimum trade size{clipped}"
             self.history.append(state)
             return state
 

@@ -87,16 +87,43 @@ class Broker:
         self.limits = limits or RiskLimits()
         self.realised = 0.0
         self._day = None
+        self.last_mark: float | None = None
         self._day_start_equity = equity
         self._trades_today = 0
 
     # -- risk ---------------------------------------------------------------
-    def _roll_day(self, ts: float) -> None:
+    def begin_bar(self, ts: float, mark: float | None = None) -> None:
+        """Advance the calendar to `ts`. Safe to call as often as you like.
+
+        This exists because *not trading* must still roll the day. The daily-loss
+        check compares equity against the day's opening equity, and that opening
+        value used to be refreshed only inside the order methods. So a bar that
+        tripped the limit could never roll the day that tripped it, and the bot
+        stayed halted forever -- one bad day, dead for good. Call this at the top
+        of every bar, before asking `halted()` anything.
+        """
+        if mark is not None:
+            self.last_mark = mark
         day = int(ts // 86400)
         if self._day != day:
             self._day = day
-            self._day_start_equity = self.equity()
+            self._day_start_equity = self.equity(self.last_mark)
             self._trades_today = 0
+
+    def mark_to(self, price: float) -> None:
+        """Value the book at `price`. `daily_pnl` is meaningless without it.
+
+        An open position used to be marked at its *entry* price whenever no mark
+        was supplied, so the daily loss check compared the entry value against
+        the day's open -- a number driven by where you bought, not by what the
+        market did. On a crash day it reported an 8.6% loss on a bar that had
+        not moved.
+        """
+        self.last_mark = price
+
+    # kept for callers that predate the public name
+    def _roll_day(self, ts: float) -> None:
+        self.begin_bar(ts)
 
     def daily_pnl(self) -> float:
         return self.equity() - self._day_start_equity
@@ -114,7 +141,7 @@ class Broker:
     def equity(self, mark: float | None = None) -> float:
         if not self.position.is_open:
             return self.cash
-        p = mark if mark is not None else self.position.entry
+        p = mark if mark is not None else (self.last_mark or self.position.entry)
         return self.cash + self.position.qty * p
 
     # -- orders -------------------------------------------------------------

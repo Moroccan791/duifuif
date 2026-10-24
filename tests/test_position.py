@@ -139,17 +139,98 @@ def test_rebalance_threshold_prevents_churn():
 
 
 def test_halted_broker_stops_the_runner():
-    b = PaperBroker(1000.0, fee_pct=0.0,
+    """A limit that has tripped must actually stop the bot -- for that day.
+
+    The crash here is deliberately not deep enough to break the moving average.
+    A crash that breaks it makes the strategy sell on the same bar, which caps
+    the loss at the exit price and never reaches a 2% daily limit. The limit has
+    to be tested on a loss the strategy is *still holding*.
+    """
+    from chartbot.data import Candle
+    b = PaperBroker(1000.0, fee_pct=0.0, slippage_pct=0.0,
                     limits=RiskLimits(max_notional_pct=1.0,
-                                      max_daily_loss_pct=0.0001,
+                                      max_daily_loss_pct=0.02,
                                       max_trades_per_day=500))
-    b.add_to_position(5.0, 100.0, ts=1.0)
-    b.close_position(50.0, 2.0)
-    c = trending_candles(n=300, up=True, seed=6)
+    t0 = 1_700_000_000.0
+    # 0.6%/bar ramp: SMA(50) trails spot by ~14%, so an 8% drop stays above it.
+    px = [100.0 * (1.006 ** i) * (1.001 if i % 2 else 0.999) for i in range(200)]
+    # one bar per DAY so the calendar rolls and each day's opening equity is
+    # the previous close; the crash below then shares a day with the bar before
+    # it, which is the only way a daily limit can be observed at all.
+    c = [Candle(ts=t0 + i * 86_400.0, open=p, high=p, low=p, close=p, volume=1.0)
+         for i, p in enumerate(px)]
     r = PositionRunner(b, PositionConfig(min_trade_usd=1.0))
-    st = r.step(c)
-    assert "halted" in st.note
-    assert not st.action
+    for i in range(90, len(c)):
+        r.step(c[:i + 1])
+    assert b.position.is_open, "should be long after a steady rise"
+
+    crash = c[:]
+    crash.append(Candle(ts=crash[-1].ts + 1, open=crash[-1].close,
+                        high=crash[-1].close, low=crash[-1].close * 0.92,
+                        close=crash[-1].close * 0.92, volume=1.0))
+    st = r.step(crash)
+    assert st.target > 0.0, "price fell through the SMA; test no longer measures a held loss"
+    assert b.halted(), "a -8% day at full exposure must trip a 2% daily limit"
+
+    st2 = r.step(crash)   # same day, next tick
+    assert "halted" in st2.note
+    assert not st2.action
+
+
+def test_daily_loss_limit_clears_when_the_next_day_arrives():
+    """Not trading must still roll the calendar, or the halt is permanent.
+
+    The day only used to roll inside the order methods, so a halt blocked the
+    very trades needed to roll it: 3,179 of 3,938 bars were spent halted.
+    """
+    from chartbot.data import Candle
+    b = PaperBroker(1_000.0, fee_pct=0.0, slippage_pct=0.0,
+                    limits=RiskLimits(max_notional_pct=1.0,
+                                      max_daily_loss_pct=0.05,
+                                      max_trades_per_day=500))
+    r = PositionRunner(b, PositionConfig(min_trade_usd=1.0))
+    t0 = 1_700_000_000.0
+    day = 86_400.0
+    # a long, calm uptrend then a -20% crash inside one day
+    candles = [Candle(ts=t0 + i * day, open=100.0, high=100.0, low=100.0,
+                      close=100.0 + 0.4 * i, volume=1.0) for i in range(200)]
+    for i in range(70, len(candles)):
+        r.step(candles[:i + 1])
+    crashed = candles[:]
+    crashed.append(Candle(ts=crashed[-1].ts + day, open=crashed[-1].close,
+                          high=crashed[-1].close, low=crashed[-1].close * 0.7,
+                          close=crashed[-1].close * 0.78, volume=1.0))
+    r.step(crashed)
+    assert b.halted(), "the limit should have tripped on a -22% day"
+
+    # next day: limit is measured from that day's open, so trading resumes
+    nxt = crashed[:]
+    nxt.append(Candle(ts=nxt[-1].ts + day, open=crashed[-1].close,
+                      high=crashed[-1].close, low=crashed[-1].close,
+                      close=crashed[-1].close, volume=1.0))
+    state = r.step(nxt)
+    assert not state.note.startswith("halted"), state.note
+
+
+def test_target_is_sized_to_the_notional_cap_not_blocked_by_it():
+    """A cap must shrink the order, not veto it.
+
+    At BTC's 2021 lows realised vol fell to 24%, so the target went to 100% of
+    equity. The default 50% notional cap rejected that order -- every bar,
+    forever -- so the account stayed flat through the entire recovery while its
+    own state said "target 1.00". Clipping to the cap keeps it invested.
+    """
+    c = trending_candles(n=400, up=True, seed=11)            # low vol, 100% target
+    b = PaperBroker(10_000.0, fee_pct=0.0, slippage_pct=0.0)  # default 50% cap
+    r = PositionRunner(b, PositionConfig(min_trade_usd=1.0))
+    opened = None
+    for i in range(70, len(c)):
+        st = r.step(c[:i + 1])
+        if opened is None and b.position.is_open:
+            opened = abs(b.position.qty) * st.price / b.equity(st.price)
+    assert b.position.is_open, "cap vetoed the position instead of clipping it"
+    assert opened == pytest.approx(0.5, abs=0.02), opened
+    assert any("notional cap" in (h.note or "") for h in r.history)
 
 
 # ---- live runner must agree with the backtest ----------------------------

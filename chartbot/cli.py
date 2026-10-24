@@ -209,21 +209,27 @@ def cmd_run(args: argparse.Namespace) -> int:
     """The live loop. Paper by default; real money needs two flags and keys."""
     from .position import PositionConfig, PositionRunner
 
+    # Spot, own cash, no borrowing: the backtest allowed up to 1x equity, so the
+    # risk limit has to allow it too. With the 0.5 default the live bot would
+    # quietly hold half the position the backtest measured -- and quietly is the
+    # problem, because nothing about the fills would look wrong.
+    use_position = args.strategy == "position"
+    from .broker import RiskLimits
+    limits = RiskLimits(max_notional_pct=1.0 if use_position else 0.5,
+                        max_daily_loss_pct=args.max_daily_loss,
+                        max_trades_per_day=200)
+
     if args.live:
         if not args.i_understand_this_can_lose_money:
             print("refusing: --live needs --i-understand-this-can-lose-money")
             return 2
-        broker = BinanceBroker(args.equity, symbol=args.symbol,
+        broker = BinanceBroker(args.equity, symbol=args.symbol, limits=limits,
                                testnet=args.testnet, allow_live=True)
         print(f"LIVE on {'TESTNET' if args.testnet else 'REAL MONEY'} - {args.symbol}")
     else:
-        from .broker import RiskLimits
-        broker = PaperBroker(args.equity, limits=RiskLimits(
-            max_notional_pct=1.0, max_daily_loss_pct=args.max_daily_loss,
-            max_trades_per_day=200))
+        broker = PaperBroker(args.equity, limits=limits)
         print(f"PAPER - ${args.equity:,.2f} notional, nothing is sent anywhere")
 
-    use_position = args.strategy == "position"
     pcfg = PositionConfig(sma_window=args.sma, target_vol=args.target_vol)
     cfg = RunnerConfig(symbol=args.symbol, interval=args.interval,
                        lookback=args.lookback, signal=_signal_cfg(args))
