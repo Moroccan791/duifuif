@@ -33,6 +33,7 @@ class PaperBroker:
     n_wins: int = 0
     n_losses: int = 0
     closed: list[TradeRecord] = field(default_factory=list)
+    _signal_meta: dict[str, dict] = field(default_factory=dict)
 
     def execute(
         self, signal: Signal, book: Book, shares: float, now: float, as_maker: bool = False
@@ -81,6 +82,11 @@ class PaperBroker:
             reason=signal.reason,
         )
         self.fills.append(fill)
+        self._signal_meta[signal.token_id] = {
+            "edge": signal.edge_per_share,
+            "z": float(signal.meta.get("z") or 0.0),
+            "remaining_s": float(signal.meta.get("remaining_s") or 0.0),
+        }
         self.fees_paid += fee
         self.risk.record_fill(now, notional + fee)
         return fill
@@ -107,6 +113,9 @@ class PaperBroker:
                     fee=pos.fees,
                     won=won,
                     pnl=pnl,
+                    edge=self._signal_meta.get(token, {}).get("edge", 0.0),
+                    z=self._signal_meta.get(token, {}).get("z", 0.0),
+                    remaining_s=self._signal_meta.get(token, {}).get("remaining_s", 0.0),
                 )
             )
             if won:

@@ -202,6 +202,52 @@ Nothing else. Win rate is a *property of the price*, and the price is public
 information. What is not public is whether you're better than it — and
 `pm5m expectancy` measures that, which took ~1,700 trades last time we checked.
 
+
+---
+
+## 0.7 "Can we buy at 50–60¢ and win 70%?"
+
+`python -m pm5m selectivity`. This is a well-posed question, because at a *fixed*
+price a higher win rate **is** a higher edge — at 55¢ every extra point of
+accuracy is a cent per share.
+
+The only lever that raises win rate at a fixed price is **taking fewer, better
+trades**. So I swept the edge threshold and measured the trade-off:
+
+| mode | counterparty | peak win rate (≥30 trades) | p-value |
+|---|---|---|---|
+| maker | spot-watching **(hypothesis)** | **60.6%** on 99 trades | 0.096 — not significant |
+| maker | informed (honest default) | 46.7% on 15 trades | 0.746 |
+| taker | spot-watching | 54.5% on 22 trades | 0.508 |
+| taker | informed | 28.6% on 7 trades | 0.884 |
+
+**70% did not appear at any threshold, in any mode, on any sample worth
+trusting.**
+
+### The maker paradox (the most useful thing here)
+
+Raising the required edge **lowers** the maker win rate instead of raising it:
+
+| min edge | trades | win rate |
+|---|---|---|
+| 0.5¢ | 99 | **60.6%** |
+| 2.0¢ | 62 | **56.5%** |
+| 3.0¢ | 0 | — |
+
+A maker who demands more edge must quote further below fair value, so the order
+only fills when the market crashes down to meet it — which is exactly when the
+counterparty is most likely to be right. **Demanding a bigger edge selects for
+maximum adverse selection.**
+
+Selectivity is only a real lever for *takers*, who choose when to act. For
+makers the counterparty chooses, and it chooses the worst moments.
+
+### And the 66.7% you'd screenshot
+
+One cell did show **66.7%**: 18 trades, +$71, p=0.166. That's the number people
+post. It is noise, and it will revert to the price you paid as the sample grows.
+If you ever see a 70% win rate, **count the trades first**.
+
 ---
 
 ## 1. The economics, with numbers
@@ -364,10 +410,11 @@ visible in `pm5m report`.
 | Goal arithmetic + ruin Monte Carlo | `pm5m/goals.py` | complete, tested |
 | Expectancy / significance testing | `pm5m/expectancy.py` | complete, tested |
 | Win-rate vs profit decoupling | `pm5m/winrate.py` | complete, tested |
+| Selectivity / win-rate ceiling search | `pm5m/selectivity.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
 | Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-110 tests. Two of them exist specifically because the simulator once reported a
+121 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 

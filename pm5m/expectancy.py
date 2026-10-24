@@ -125,6 +125,11 @@ class TradeRecord:
     fee: float
     won: bool
     pnl: float
+    # Optional signal context, for conditional analysis. Defaults keep every
+    # existing construction site valid.
+    edge: float = 0.0
+    z: float = 0.0
+    remaining_s: float = 0.0
 
     @property
     def stake(self) -> float:

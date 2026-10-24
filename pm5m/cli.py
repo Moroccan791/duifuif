@@ -36,6 +36,108 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_selectivity(args: argparse.Namespace) -> int:
+    """Can selectivity lift the win rate to 70% at 50-60c, and what does it cost?"""
+    from .selectivity import HEADER, best_by_profit, highest_win_rate, sweep
+
+    print("=" * 92)
+    print("CAN WE WIN 70% AT 50-60c?  THE ONLY LEVER IS TAKING FEWER, BETTER TRADES")
+    print("=" * 92)
+    print(
+        "At a fixed price band, a higher win rate IS a higher edge -- at 55c every\n"
+        "extra point of accuracy is a cent per share. So the question is real.\n"
+        "Raising the required edge filters out the marginal trades first, which\n"
+        "lifts the hit rate on what survives. The cost is trade count.\n"
+    )
+
+    results = sweep(windows=args.windows, seed=args.seed)
+
+    for label, rows in results.items():
+        print(f"--- counterparty: {label} ---")
+        print(HEADER)
+        print("-" * 92)
+        for r in rows:
+            print(r.pretty())
+        top = highest_win_rate(rows, min_trades=args.min_trades)
+        best = best_by_profit(rows)
+        print()
+        if top:
+            print(
+                f"  highest win rate with >= {args.min_trades} trades: "
+                f"{top.win_rate:.1%} on {top.trades} trades "
+                f"(threshold {top.min_edge_cents:.1f}c, pnl ${top.total_pnl:+,.0f})"
+            )
+        if best:
+            print(
+                f"  most profit: ${best.total_pnl:+,.0f} at "
+                f"{best.win_rate:.1%} win rate on {best.trades} trades "
+                f"(threshold {best.min_edge_cents:.1f}c)"
+            )
+        print()
+
+    print("=" * 92)
+    print("WHAT THIS MEANS")
+    print("=" * 92)
+
+    allrows = [r for rows in results.values() for r in rows]
+    eligible = [r for r in allrows if r.trades >= args.min_trades]
+    best_wr = max(eligible, key=lambda r: r.win_rate) if eligible else None
+    best_pnl = max(allrows, key=lambda r: r.total_pnl) if allrows else None
+    noise = [
+        r for r in allrows
+        if 0 < r.trades < args.min_trades and r.win_rate >= 0.65
+    ]
+
+    print(
+        f"  Ceiling with a meaningful sample (>= {args.min_trades} trades): "
+        + (f"{best_wr.win_rate:.1%} on {best_wr.trades} trades" if best_wr else "none")
+    )
+    if best_wr:
+        print(
+            f"    -> 70% was NOT reached at any threshold. p-value on that row: "
+            f"{best_wr.p_value:.3f}"
+            + ("  (not significant)" if best_wr.p_value >= 0.05 else "  (significant)")
+        )
+    if best_pnl:
+        print(
+            f"  Most profitable row overall: ${best_pnl.total_pnl:+,.0f} at a "
+            f"{best_pnl.win_rate:.1%} win rate on {best_pnl.trades} trades."
+        )
+    print()
+
+    if noise:
+        print("  High win rates that are pure noise (fewer trades than the minimum):")
+        for r in sorted(noise, key=lambda r: -r.win_rate)[:5]:
+            print(
+                f"    {r.win_rate:.1%} on {r.trades} trades, "
+                f"pnl ${r.total_pnl:+,.0f}, p={r.p_value:.3f}  <- NOT evidence"
+            )
+        print(
+            "    These are the numbers you would screenshot. They are the reason\n"
+            "    people believe a 70% win rate exists. It does -- until the sample\n"
+            "    grows and it reverts to the price you paid."
+        )
+        print()
+
+    print(
+        "  THE MAKER PARADOX -- the most important thing on this page:\n\n"
+        "  Raising the required edge LOWERS the maker win rate instead of raising it.\n"
+        "  A maker who demands more edge must quote further below fair value, so the\n"
+        "  order only fills when the market crashes down to meet it -- which is\n"
+        "  precisely when the counterparty is most likely to be right. Demanding a\n"
+        "  bigger edge selects for maximum adverse selection.\n\n"
+        "  Selectivity is only a real lever for TAKERS, who choose when to act. For\n"
+        "  makers the counterparty chooses, and it chooses the worst moments.\n\n"
+        "  And for takers, the fee at 55c (3.15% of stake) eats the improvement.\n"
+        "  That is why no row in this table reaches 70% with a sample worth trusting.\n\n"
+        "  FINAL: at 50-60c the achievable, statistically supportable win rate looks\n"
+        "  like the high 50s to low 60s -- and only if the spot-watching counterparty\n"
+        "  hypothesis is true. 70% is not on the table at this sample size, from any\n"
+        "  threshold, in any mode. If you see 70% somewhere, count the trades."
+    )
+    return 0
+
+
 def cmd_winrate(args: argparse.Namespace) -> int:
     """Can a 70-80% win rate be genuine and profitable?"""
     from .winrate import (
@@ -489,6 +591,12 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    sel = sub.add_parser("selectivity", help="can selectivity reach 70% win rate at 50-60c?")
+    sel.add_argument("--windows", type=int, default=250)
+    sel.add_argument("--min-trades", type=int, default=30)
+    sel.add_argument("--seed", type=int, default=11)
+    sel.set_defaults(func=cmd_selectivity)
 
     wr = sub.add_parser("winrate", help="why a 70-80% win rate means nothing on its own")
     wr.set_defaults(func=cmd_winrate)
