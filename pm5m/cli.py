@@ -669,6 +669,95 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reversal(args: argparse.Namespace) -> int:
+    """Measure the five-minute fade on 1-minute klines, then price the trade.
+
+    This is the only part of pm5m with a measured edge. It answers two separate
+    questions and refuses to merge them: how often the event happens (data),
+    and whether it is worth buying at a given price (arithmetic + fees).
+    """
+    import glob as _glob
+
+    from .reversal import (MIN_MOVE, breakeven_ask, ev_per_dollar,
+                           fade_probability, kelly_fraction)
+
+    th = args.threshold
+    print(f"fade threshold: |5-minute move| >= {th:.2%}   "
+          f"(fee {args.fee:.0%} taker, settlement Up iff TWAP60(close) >= TWAP60(open))")
+    print()
+
+    for pattern in args.csv:
+        files = sorted(_glob.glob(pattern))
+        if not files:
+            print(f"{pattern}: no files")
+            continue
+        ts, px = [], []
+        for f in files:
+            with open(f, errors="ignore") as fh:
+                fh.readline()
+                for line in fh:
+                    p = line.split(",")
+                    if len(p) < 6:
+                        continue
+                    try:
+                        ts.append(int(p[0]) // 1000)
+                        px.append(float(p[5]))
+                    except ValueError:
+                        continue
+        if not ts:
+            print(f"{pattern}: no rows")
+            continue
+        t0 = min(ts)
+        n = (max(ts) - t0) // 60 + 2
+        close = [0.0] * n
+        for i in range(len(ts)):
+            close[(ts[i] - t0) // 60] = px[i]
+
+        rows = []
+        for m in range(61, n - 5, 5):
+            # a = strike (TWAP60 at the window open), b = settle (TWAP60 at the
+            # close). The SIGNAL is the move that already happened, close[m-1]
+            # against close[m-6] -- never b/a, which is the outcome itself.
+            a, b, back = close[m - 1], close[m + 4], close[m - 6]
+            if a <= 0 or b <= 0 or back <= 0:
+                continue
+            rows.append((t0 + m * 60, 1 if b >= a else 0, a / back - 1.0))
+        if not rows:
+            print(f"{pattern}: no complete windows")
+            continue
+
+        sel = [r for r in rows if abs(r[2]) >= th]
+        base = sum(r[1] for r in rows) / len(rows)
+        print(f"{pattern}")
+        print(f"  {len(rows):,} five-minute windows, base rate up {base:.2%}")
+        if not sel:
+            print("  no windows above the threshold")
+            print()
+            continue
+        wins = sum(1 for r in sel if (1 if r[2] < 0 else 0) == r[1])
+        hit = wins / len(sel)
+        se = (hit * (1 - hit) / len(sel)) ** 0.5
+        per_day = len(sel) / (len(rows) * 300 / 86400)
+        print(f"  fade fires on {len(sel):,} of them ({100*len(sel)/len(rows):.2f}%), "
+              f"about {per_day:.1f} per day")
+        print(f"  hit rate {hit:.2%}  +/- {1.96*se:.2%} (95%)")
+        print(f"  break-even price {breakeven_ask(hit)*100:.2f}c -- buy below that or lose")
+        print()
+        print("  price you pay   EV per $1    Kelly stake on $100   verdict")
+        for ask in (0.45, 0.48, 0.50, 0.52, 0.54, 0.56):
+            ev = ev_per_dollar(hit, ask, args.fee)
+            k = kelly_fraction(hit, ask, args.fee)
+            print(f"      {ask*100:4.0f}c        {ev*100:+7.2f}%      "
+                  f"{k*100:5.2f}% = ${100*k:5.2f}      "
+                  f"{'TAKE' if ev > 0 else 'pass'}")
+        print()
+
+    print(f"Reference table (BTC 2022-2026): a 0.40% move fades {fade_probability(MIN_MOVE):.1%}")
+    print("The hit rate is the event. The price is the trade. Only one of them")
+    print("is in this data; the other has to be recorded off the order book.")
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from .backtest import replay
     from .storage import Store
@@ -802,6 +891,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("report", help="summarise the store")
     rp.set_defaults(func=cmd_report)
+
+    rv = sub.add_parser("reversal", help="measure the 5-minute fade on 1m klines and price it")
+    rv.add_argument("--csv", action="append", required=True,
+                    help="glob of 1-minute CSVs (repeatable to compare assets)")
+    rv.add_argument("--threshold", type=float, default=0.004,
+                    help="minimum absolute 5-minute move, as a fraction (default 0.004)")
+    rv.add_argument("--fee", type=float, default=0.07, help="taker fee rate (default 0.07)")
+    rv.set_defaults(func=cmd_reversal)
     return p
 
 
