@@ -99,6 +99,20 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     print()
     if res["trades"] < 10:
         print("  Only a handful of trades. That number is noise, not a result.")
+
+    if args.trace:
+        print()
+        print(f"  FIRST {min(args.trace, len(res['runner'].closed))} TRADES, IN FULL")
+        print()
+        for k, t in enumerate(res["runner"].closed[:args.trace], 1):
+            held = (t["closed_ts"] - t["opened_ts"]) / 60.0 if t["closed_ts"] else 0.0
+            print(f"  #{k}  {t['side'].upper()} {t['qty']:.6f} BTC @ {t['entry']:,.2f}")
+            print(f"      why      {t['why']}")
+            print(f"      stop     {t['stop']:,.2f}      target {t['target']:,.2f}")
+            print(f"      exited   {t['price']:,.2f} via {t['reason'].upper()} "
+                  f"after {held:.0f} min")
+            print(f"      pnl      ${t['pnl']:+.2f}")
+            print()
     return 0
 
 
@@ -328,6 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = common(sub.add_parser("backtest", help="replay history"))
     b.add_argument("--bars", type=int, default=1000)
+    b.add_argument("--trace", type=int, default=0,
+                   help="print the first N completed trades in full")
     b.set_defaults(func=cmd_backtest)
 
     r = common(sub.add_parser("run", help="the live loop"))

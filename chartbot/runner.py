@@ -51,6 +51,8 @@ class Runner:
         pos = self.broker.position
         if not pos.is_open:
             return ""
+        if getattr(self, "_open_trade", None):
+            self._open_trade["closed_ts"] = ts
         # Stops first: never let a winner turn into a loser while checking targets.
         if pos.qty > 0:
             if price <= pos.stop:
@@ -73,12 +75,28 @@ class Runner:
         return ""
 
     def _record_close(self, reason: str) -> None:
+        """Record the whole trade, not just the exit, so it can be explained."""
         f = self.broker.fills[-1] if self.broker.fills else None
+        entry = getattr(self, "_open_trade", {}) or {}
+        exit_px = f.price if f else 0.0
+        entry_px = entry.get("entry", 0.0)
+        qty = entry.get("qty", 0.0)
+        pnl = (exit_px - entry_px) * qty if qty else 0.0
         self.closed.append({
             "reason": reason,
-            "price": f.price if f else 0.0,
+            "price": exit_px,
+            "entry": entry_px,
+            "qty": qty,
+            "side": entry.get("side", ""),
+            "pnl": pnl,
+            "opened_ts": entry.get("ts", 0.0),
+            "closed_ts": entry.get("closed_ts", 0.0),
+            "why": entry.get("why", ""),
+            "stop": entry.get("stop", 0.0),
+            "target": entry.get("target", 0.0),
             "realised": self.broker.realised,
         })
+        self._open_trade = {}
 
     # -- one decision -------------------------------------------------------
     def step(self, candles: list[Candle], ts: float | None = None) -> Step:
@@ -99,6 +117,11 @@ class Runner:
                     sig.action, sig.size, price, sig.stop, sig.target,
                     ts=ts, reason="; ".join(sig.reasons[:2]),
                 )
+                self._open_trade = {
+                    "side": sig.action, "entry": price, "qty": sig.size,
+                    "stop": sig.stop, "target": sig.target, "ts": ts,
+                    "why": "; ".join(sig.reasons),
+                }
                 action = f"opened {sig.action} {sig.size:.6f} @ {price:,.2f}"
             except BrokerError as e:
                 action = f"blocked: {e}"
