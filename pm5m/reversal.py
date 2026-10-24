@@ -160,3 +160,46 @@ def fade_signal(close_start: float, close_now: float) -> FadeSignal:
         breakeven_ask=breakeven_ask(p) if p > 0.5 else 0.5,
         reason=band_note(size),
     )
+
+
+# ---------------------------------------------------------------------------
+# turning klines into the thing that is actually bet on
+# ---------------------------------------------------------------------------
+def windows_from_files(files: list[str]) -> list[tuple[float, int, float]]:
+    """Read 1-minute klines and emit `(ts, up, trailing_move)` per window.
+
+    `up` is the settlement outcome under the venue's real rule
+    (TWAP60(close) >= TWAP60(open), ties Up). `trailing_move` is the move that
+    had already happened when the window opened -- the only input a decision may
+    use. It is emphatically NOT the forward move, which is the outcome itself.
+    """
+    ts_all: list[int] = []
+    px_all: list[float] = []
+    for f in files:
+        with open(f, errors="ignore") as fh:
+            fh.readline()
+            for line in fh:
+                p = line.split(",")
+                if len(p) < 6:
+                    continue
+                try:
+                    ts_all.append(int(p[0]) // 1000)
+                    px_all.append(float(p[5]))
+                except ValueError:
+                    continue
+    if not ts_all:
+        return []
+
+    t0 = min(ts_all)
+    n = (max(ts_all) - t0) // 60 + 2
+    close = [0.0] * n
+    for i in range(len(ts_all)):
+        close[(ts_all[i] - t0) // 60] = px_all[i]
+
+    out: list[tuple[float, int, float]] = []
+    for m in range(61, n - 5, 5):
+        a, b, back = close[m - 1], close[m + 4], close[m - 6]
+        if a <= 0 or b <= 0 or back <= 0:
+            continue
+        out.append((float(t0 + m * 60), 1 if b >= a else 0, a / back - 1.0))
+    return out

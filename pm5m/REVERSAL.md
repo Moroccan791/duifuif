@@ -96,17 +96,65 @@ almost exactly the fee rate, which is what an efficient market looks like.
 
 ### At $100
 
-If fills happen at 50c, full Kelly is 4.17% of bankroll ($4.17 a trade), and
-~43 opportunities a day across the three assets:
+**Correction.** An earlier version of this document said ~$7-9 a day on $100 at
+50c. That was wrong. It assumed full Kelly (4.47% of bankroll per bet) across
+43 trades a day. In practice the stake is capped at 2% — Kelly's largest
+positions land on the >1% move band measured from only 927 windows, and sizing
+off the least-sampled bucket is how this stops being a backtest and starts being
+a story. With the cap, $100 at 50c produces roughly **$3.40 a day**, not $8.
 
-    ~$7 - $9 per day, on $100, before any execution slippage
+Live simulation, `python -m pm5m fade`:
 
-At 52c the same activity yields about **$0.70 a day** — a different business.
-At 54c it loses about **$7 a day**. That is the whole sensitivity.
+```
+python -m pm5m fade --csv '1m/*.csv' --target 15
+```
 
-For comparison, the daily-candle trend strategy in `../RULES.md` earns about
-**$0.11 a day** on $100. This is 60-80× better *if* the price is right, and
-worse than doing nothing if it is not.
+## What $15 a day costs
+
+The capital that makes the *expected* daily profit equal $15, by the price you
+actually pay. Three columns because the edge is only known to within a
+confidence interval (53.05% – 54.76%), and at the interesting prices that
+interval is the difference between a small account and no trade at all.
+
+| fill price | if edge is 53.05% | if 53.91% | if 54.76% | worst day | max drawdown |
+|---|---|---|---|---|---|
+| 46c | $166 | **$143** | $125 | −$48 | −85% |
+| 48c | $278 | **$221** | $183 | −$79 | −83% |
+| 50c | $1,091 | **$442** | $317 | −$191 | −80% |
+| 51.5c | **never** | $4,198 | $804 | −$1,226 | −58% |
+| 52c | **never** | $69,229 | $1,789 | −$16,200 | −49% |
+| 54c | never | never | never | — | — |
+
+40.6 bets a day across BTC, ETH and SOL, measured over 2025-01 to 2026-10 —
+the period all three assets actually cover. Worst day and drawdown are at the
+middle column's capital.
+
+Three things in that table matter more than the numbers:
+
+1. **A one-cent move in the fill price changes the answer by 10×.** 50c → $442.
+   51.5c → $4,198. 52c → $69,229. This is not a strategy with a smooth
+   sensitivity to execution; it has a cliff, and the cliff is right where the
+   market probably is.
+2. **"never" is a real outcome.** At 51.5c, if the true edge is at the bottom of
+   its confidence interval, the fee eats it and no amount of capital helps.
+   Buying at or above the break-even price is not a worse business, it is not a
+   business.
+3. **The drawdown is brutal.** −80% at 50c, −58% at 51.5c, over 1.8 years. The
+   worst *day* at 51.5c is −$1,226 against a $4,198 float — a quarter of the
+   account in 24 hours. This is a short-volatility strategy: it sells insurance
+   against the next five minutes being volatile, and it loses repeatedly when it
+   is wrong.
+
+### Why the estimate is arithmetic, not a backtest
+
+The first version of `fade_sim` measured realised P&L from a single path and
+divided. That is worthless at this sample size: 3,519 bets on BTC with a
+half-cent edge per bet have a daily standard error *larger than the edge*, so
+the same strategy reported +$0.03/day and, on a different slice, a capital
+requirement of half a million dollars. The capital figures above come from
+expected value — bets per day × stake fraction × edge per stake — and the
+simulation is used only for the risk shape, which is what it can actually
+measure.
 
 ## What is NOT known — the thing to measure next
 

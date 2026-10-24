@@ -686,46 +686,17 @@ def cmd_reversal(args: argparse.Namespace) -> int:
           f"(fee {args.fee:.0%} taker, settlement Up iff TWAP60(close) >= TWAP60(open))")
     print()
 
+    from .reversal import windows_from_files
+
     for pattern in args.csv:
         files = sorted(_glob.glob(pattern))
         if not files:
             print(f"{pattern}: no files")
             continue
-        ts, px = [], []
-        for f in files:
-            with open(f, errors="ignore") as fh:
-                fh.readline()
-                for line in fh:
-                    p = line.split(",")
-                    if len(p) < 6:
-                        continue
-                    try:
-                        ts.append(int(p[0]) // 1000)
-                        px.append(float(p[5]))
-                    except ValueError:
-                        continue
-        if not ts:
-            print(f"{pattern}: no rows")
-            continue
-        t0 = min(ts)
-        n = (max(ts) - t0) // 60 + 2
-        close = [0.0] * n
-        for i in range(len(ts)):
-            close[(ts[i] - t0) // 60] = px[i]
-
-        rows = []
-        for m in range(61, n - 5, 5):
-            # a = strike (TWAP60 at the window open), b = settle (TWAP60 at the
-            # close). The SIGNAL is the move that already happened, close[m-1]
-            # against close[m-6] -- never b/a, which is the outcome itself.
-            a, b, back = close[m - 1], close[m + 4], close[m - 6]
-            if a <= 0 or b <= 0 or back <= 0:
-                continue
-            rows.append((t0 + m * 60, 1 if b >= a else 0, a / back - 1.0))
+        rows = windows_from_files(files)
         if not rows:
             print(f"{pattern}: no complete windows")
             continue
-
         sel = [r for r in rows if abs(r[2]) >= th]
         base = sum(r[1] for r in rows) / len(rows)
         print(f"{pattern}")
@@ -755,6 +726,76 @@ def cmd_reversal(args: argparse.Namespace) -> int:
     print(f"Reference table (BTC 2022-2026): a 0.40% move fades {fade_probability(MIN_MOVE):.1%}")
     print("The hit rate is the event. The price is the trade. Only one of them")
     print("is in this data; the other has to be recorded off the order book.")
+    return 0
+
+
+def _utc(ts: float) -> str:
+    import time as _t
+    return _t.strftime("%Y-%m-%d", _t.gmtime(ts))
+
+
+def cmd_fade(args: argparse.Namespace) -> int:
+    """What a daily income target actually costs, at each possible fill price.
+
+    The honest output is a table, not a number: capital scales linearly with the
+    edge, and the edge is only known to within a confidence interval, so the
+    requirement ranges from "cheap" to "impossible" across it.
+    """
+    import glob as _glob
+
+    from .fade_sim import FadeConfig, capital_for_daily_target, simulate
+    from .reversal import windows_from_files
+
+    grouped: list[list[tuple[float, int, float]]] = []
+    for pattern in args.csv:
+        files = sorted(_glob.glob(pattern))
+        got = windows_from_files(files)
+        if got:
+            grouped.append(got)
+    if not grouped:
+        print("no windows; check --csv")
+        return 1
+
+    # Compare like with like: if one asset only has two years of data, counting
+    # the other asset's earlier years dilutes bets-per-day and inflates the
+    # capital requirement. Default to the period they all cover.
+    since = args.since if args.since is not None else max(g[0][0] for g in grouped)
+    windows = [w for g in grouped for w in g if w[0] >= since]
+    windows.sort(key=lambda w: w[0])
+    if not windows:
+        print("no windows in the common period; pass --since")
+        return 1
+
+    bets = sum(1 for w in windows if abs(w[2]) >= args.threshold)
+    days = len({int(w[0] // 86_400) for w in windows})
+    print(f"period: {_utc(since)} onward ({len(grouped)} asset(s))")
+    print(f"{len(windows):,} windows over {days:,} days; "
+          f"{bets:,} bets fire ({bets/days:.1f} per day) at >= {args.threshold:.2%}")
+    print(f"target: ${args.target:,.2f} per day\n")
+
+    lo, mid, hi = 0.5305, 0.5391, 0.5476      # BTC 53.91% and its 95% interval
+    print("capital required, by the price you actually pay for the fade")
+    print(f"{'fill':>7}{'if edge is 53.05%':>20}{'if 53.91%':>14}{'if 54.76%':>14}"
+          f"{'worst day':>13}{'maxDD':>9}")
+    for fill in (0.46, 0.48, 0.50, 0.515, 0.52, 0.54):
+        cfg = FadeConfig(fill=fill, threshold=args.threshold)
+        cells = []
+        for p in (lo, mid, hi):
+            c = capital_for_daily_target(windows, args.target, cfg, p)
+            cells.append("never" if c == float("inf") else f"${c:,.0f}")
+        cap = capital_for_daily_target(windows, args.target, cfg, mid)
+        if cap == float("inf"):
+            print(f"{fill*100:6.1f}c{cells[0]:>20}{cells[1]:>14}{cells[2]:>14}"
+                  f"{'-':>13}{'-':>9}")
+            continue
+        res = simulate(windows, bankroll=cap, cfg=cfg, compound=False)
+        print(f"{fill*100:6.1f}c{cells[0]:>20}{cells[1]:>14}{cells[2]:>14}"
+              f"{res.worst_day:>13,.0f}{res.max_drawdown*100:>8.0f}%")
+
+    print("\nThe 'never' cells are not pessimism. At 51.5c the fee-adjusted edge")
+    print("is small enough that the low end of the confidence interval is below")
+    print("break-even, so the trade stops being a trade. Everything above is")
+    print("conditional on a fill price this code cannot observe.")
     return 0
 
 
@@ -899,6 +940,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="minimum absolute 5-minute move, as a fraction (default 0.004)")
     rv.add_argument("--fee", type=float, default=0.07, help="taker fee rate (default 0.07)")
     rv.set_defaults(func=cmd_reversal)
+
+    fd = sub.add_parser("fade", help="what a daily income target costs at each fill price")
+    fd.add_argument("--csv", action="append", required=True,
+                    help="glob of 1-minute CSVs (repeatable)")
+    fd.add_argument("--target", type=float, default=15.0, help="dollars per day (default 15)")
+    fd.add_argument("--threshold", type=float, default=0.004, help="minimum move (default 0.004)")
+    fd.add_argument("--since", type=float, default=None,
+                    help="unix ts to start from (default: the period every input covers)")
+    fd.set_defaults(func=cmd_fade)
     return p
 
 
