@@ -688,13 +688,13 @@ def build_parser() -> argparse.ArgumentParser:
     dash.add_argument("--demo", action="store_true", help="use synthetic data even if a store exists")
     dash.set_defaults(func=cmd_dashboard)
 
-    sel = sub.add_parser("selectivity", help="can selectivity reach 70% win rate at 50-60c?")
+    sel = sub.add_parser("selectivity", help="can selectivity reach a 70 percent win rate at 50-60c?")
     sel.add_argument("--windows", type=int, default=250)
     sel.add_argument("--min-trades", type=int, default=30)
     sel.add_argument("--seed", type=int, default=11)
     sel.set_defaults(func=cmd_selectivity)
 
-    wr = sub.add_parser("winrate", help="why a 70-80% win rate means nothing on its own")
+    wr = sub.add_parser("winrate", help="why a 70-80 percent win rate means nothing on its own")
     wr.set_defaults(func=cmd_winrate)
 
     e = sub.add_parser("expectancy", help="is the edge statistically real?")
