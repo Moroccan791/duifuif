@@ -146,6 +146,54 @@ class Broker:
         self._trades_today += 1
         return fill
 
+    def add_to_position(self, qty: float, price: float, ts: float | None = None,
+                        reason: str = "") -> Fill:
+        """Buy (+qty) or sell (-qty), adjusting an existing position.
+
+        `open_position` REPLACES the position, which is right for a one-shot
+        entry and catastrophic for a rebalancing strategy: adding 0.1 BTC to an
+        existing 0.5 BTC left you holding 0.1 while still having paid for 0.6.
+        That bug turned a +40%/yr strategy into a -47%/yr one in the live
+        runner, which is exactly the kind of thing a backtest cannot catch
+        because the backtest never calls the broker.
+        """
+        ts = ts if ts is not None else time.time()
+        self._roll_day(ts)
+        h = self.halted()
+        if h:
+            raise BrokerError(f"trading halted: {h}")
+        if abs(qty) < 1e-12:
+            raise BrokerError("quantity must be non-zero")
+        self._check_notional(abs(qty), price)
+
+        pos = self.position
+        same_dir = (pos.qty == 0) or ((pos.qty > 0) == (qty > 0))
+        fill = self._execute("buy" if qty > 0 else "sell", abs(qty), price, reason)
+
+        new_qty = pos.qty + qty
+        if same_dir:
+            total = abs(pos.qty) * pos.entry + abs(qty) * fill.price
+            entry = total / (abs(pos.qty) + abs(qty))
+            self.position = Position(symbol=fill.symbol, qty=new_qty, entry=entry,
+                                     stop=pos.stop, target=pos.target,
+                                     opened_ts=pos.opened_ts or ts)
+        else:
+            # Reducing. Realise PnL on the part that was closed -- including the
+            # case where the position goes exactly flat, which an earlier
+            # version handled in its own branch and forgot to account for.
+            closed = min(abs(pos.qty), abs(qty))
+            self.realised += ((fill.price - pos.entry) * closed
+                              * (1 if pos.qty > 0 else -1)) - fill.fee
+            if abs(new_qty) < 1e-12:
+                self.position = Position()
+            else:
+                self.position = Position(symbol=fill.symbol, qty=new_qty,
+                                         entry=pos.entry, stop=pos.stop,
+                                         target=pos.target,
+                                         opened_ts=pos.opened_ts or ts)
+        self._trades_today += 1
+        return fill
+
     def close_position(self, price: float, ts: float | None = None,
                        reason: str = "") -> Fill | None:
         if not self.position.is_open:

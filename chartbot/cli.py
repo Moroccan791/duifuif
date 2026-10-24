@@ -206,6 +206,9 @@ def _rets(candles):
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """The live loop. Paper by default; real money needs two flags and keys."""
+    from .position import PositionConfig, PositionRunner
+
     if args.live:
         if not args.i_understand_this_can_lose_money:
             print("refusing: --live needs --i-understand-this-can-lose-money")
@@ -214,14 +217,29 @@ def cmd_run(args: argparse.Namespace) -> int:
                                testnet=args.testnet, allow_live=True)
         print(f"LIVE on {'TESTNET' if args.testnet else 'REAL MONEY'} - {args.symbol}")
     else:
-        broker = PaperBroker(args.equity)
+        from .broker import RiskLimits
+        broker = PaperBroker(args.equity, limits=RiskLimits(
+            max_notional_pct=1.0, max_daily_loss_pct=args.max_daily_loss,
+            max_trades_per_day=200))
         print(f"PAPER - ${args.equity:,.2f} notional, nothing is sent anywhere")
 
+    use_position = args.strategy == "position"
+    pcfg = PositionConfig(sma_window=args.sma, target_vol=args.target_vol)
     cfg = RunnerConfig(symbol=args.symbol, interval=args.interval,
                        lookback=args.lookback, signal=_signal_cfg(args))
-    runner = Runner(broker, cfg)
+    runner = PositionRunner(broker, pcfg) if use_position else Runner(broker, cfg)
 
-    if args.synthetic:
+    if args.csv:
+        allc = load_csv(args.csv, interval_s=86400.0)
+        warm = max(60, args.sma + 10)
+        end = [min(len(allc), warm + args.lookback)]
+
+        def fetcher():
+            end[0] = min(len(allc), end[0] + 1)
+            return allc[max(0, end[0] - args.lookback):end[0]]
+
+        print(f"replaying {len(allc)} candles from {args.csv}")
+    elif args.synthetic:
         from .data import live_replay
         feed = live_replay()
         fetcher = lambda: feed(args.lookback)
@@ -229,21 +247,30 @@ def cmd_run(args: argparse.Namespace) -> int:
         client = BinanceClient()
         fetcher = lambda: client.klines(args.symbol, args.interval, args.lookback)
 
-    print(f"every {args.every}s. Ctrl-C to stop.\n")
+    print(f"strategy: {'SMA %d long/flat + vol' % pcfg.sma_window if use_position else 'signal (RSI/pullback)'}")
+    print(f"every {args.every}s, {args.steps} steps. Ctrl-C to stop.\n")
+
     n = 0
     try:
         while n < args.steps:
             try:
                 candles = fetcher()
-            except Exception as e:  # noqa: BLE001 - a dropped poll must not kill the loop
+            except Exception as e:  # noqa: BLE001
                 print(f"  data error: {e}")
                 time.sleep(args.every)
                 continue
             step = runner.step(candles)
             n += 1
             eq = broker.equity(candles[-1].close)
-            line = f"[{n:>4}] {time.strftime('%H:%M:%S')} {candles[-1].close:>10,.2f}  {step.read.compact()}"
-            if step.note:
+            if use_position:
+                line = (f"[{n:>4}] {candles[-1].close:>10,.2f}  "
+                        f"sma {step.sma:>10,.2f}  vol {step.vol*100:5.1f}%  "
+                        f"pos {step.current:4.2f}->{step.target:4.2f}  "
+                        f"eq ${eq:,.2f}")
+            else:
+                line = (f"[{n:>4}] {candles[-1].close:>10,.2f}  "
+                        f"{step.read.compact()}  eq ${eq:,.2f}")
+            if getattr(step, "note", ""):
                 line += f"  {step.note}"
             if step.action:
                 line += f"  >> {step.action}"
@@ -479,6 +506,13 @@ def build_parser() -> argparse.ArgumentParser:
     b.set_defaults(func=cmd_backtest)
 
     r = common(sub.add_parser("run", help="the live loop"))
+    r.add_argument("--strategy", default="position",
+                   choices=["position", "signal"],
+                   help="position = SMA long/flat + vol (the tested one); "
+                        "signal = RSI/pullback (loses money, kept for comparison)")
+    r.add_argument("--sma", type=int, default=50)
+    r.add_argument("--target-vol", type=float, default=0.25, dest="target_vol")
+    r.add_argument("--max-daily-loss", type=float, default=0.05, dest="max_daily_loss")
     r.add_argument("--every", type=float, default=30.0)
     r.add_argument("--steps", type=int, default=20)
     r.add_argument("--live", action="store_true")

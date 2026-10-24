@@ -156,6 +156,58 @@ version I built by hand.
 
 ---
 
+## Third asset: SOL, and the pattern holds
+
+2,259 daily SOL candles, 2020-08 to 2025-09, same aggregation from Binance
+1-minute data.
+
+| | BTC | ETH | SOL |
+|---|---|---|---|
+| **SMA 50 long/flat + vol target — Sharpe** | **1.70** | **1.22** | **1.29** |
+| buy and hold — Sharpe | 1.12 | 0.70 | 1.05 |
+| strategy max drawdown | −28% | −21% | −27% |
+| buy-and-hold max drawdown | −83% | −94% | **−96%** |
+| strategy CAGR | 40.1% | 24.3% | 25.3% |
+| buy-and-hold CAGR | 69.6% | 25.4% | **74.5%** |
+
+**Three for three.** The strategy beats holding on Sharpe on every asset, and
+turns a −83%/−94%/−96% worst case into −21% to −28%. Buy-and-hold wins on
+absolute return every time, which is what you would expect from an asset class
+that went up 330×, 8× and 31×.
+
+### One honest wrinkle on SOL
+
+On SOL, the *raw* SMA 50 long/flat scored 1.39 and the vol-targeted version 1.29.
+So volatility targeting slightly **reduced** Sharpe there, while cutting the
+drawdown from −68.9% to −26.6%.
+
+That is worth stating precisely, because it refines the earlier claim:
+
+- The **signal** — long above a 50-day average — is what is consistently good.
+  It ranks at or near the top on all three assets.
+- **Volatility targeting is a risk decision, not a return enhancer.** It helps
+  BTC a lot, helps ETH, and costs SOL a little. It buys drawdown reduction and
+  pays for it with some return.
+
+Anyone who tells you vol targeting is free alpha has not tested it on enough
+assets.
+
+### Three-asset portfolio
+
+1,871 shared days (SOL only starts in 2020):
+
+| strategy | BTC | ETH | SOL | **portfolio** | CAGR | max DD |
+|---|---|---|---|---|---|---|
+| SMA 50 + vol | 1.70 | 1.22 | 1.29 | **1.75** | 31.0% | −21.0% |
+| TSMOM + vol | 1.60 | 0.83 | 1.24 | **1.52** | 21.1% | −19.7% |
+| buy and hold | 1.12 | 0.70 | 1.05 | **1.28** | 97.1% | −85.5% |
+
+The portfolio's Sharpe (1.75) is above every individual leg, which is what
+diversification is supposed to do, and the −21% drawdown is the best of any
+configuration tested.
+
+---
+
 ## Robustness — the part that decides whether to believe any of it
 
 **Both halves of the sample.** Fitted on nothing, tested everywhere:
@@ -200,19 +252,36 @@ Being straight about the limits, because this is where people fool themselves:
 
 ---
 
-## What this changes in the bot
+## What changed in the bot
 
-The current chartbot signals (RSI gates, pullback entries, 1.2×ATR stops) are
-the wrong shape and are now known to lose money. The evidence points at:
+The old signals (RSI gates, pullback entries, 1.2×ATR stops) are kept for
+comparison but are no longer the default. `chartbot/position.py` implements the
+tested strategy:
 
-- **position = long/flat above a moving average** (simple, robust, 107 trades in
-  11 years)
-- **size scaled by inverse volatility** toward a 25% annual target
-- **long-only**, because the short leg pays jump risk and loses
-- **no tight stops** — they are what turned a mediocre signal into a −17% year
+```
+position = 1 if close > SMA(50) else 0
+size     = position * 25% / realized_vol        capped at 1x (spot, no leverage)
+```
 
-That is a much smaller, slower machine than what is there now. It is also the
-only version with published evidence behind it.
+Long only. No stop losses — deliberately. A tight stop on a slow trend signal is
+exactly what turned a mediocre strategy into a −17% one; the exit condition is
+the average crossing, at daily granularity.
+
+`python -m chartbot run --csv data/btc_daily.csv` runs it in paper mode.
+
+### The bug that made this worth doing
+
+Rewiring the live runner to this strategy made $1,000 become **$1.12**. Cause:
+`open_position` *replaces* the position, so a rebalancing strategy that added
+0.1 BTC to an existing 0.5 was left holding only 0.1 while having paid for 0.6.
+
+The backtest never noticed, because **the backtest never calls the broker.** That
+is the single most useful thing this exercise produced: a test that runs the
+live path and compares its return against the backtested range. It would have
+caught this, and it is now in `tests/test_position.py`.
+
+A second bug fell out of writing that test: closing a position exactly to flat
+silently discarded the realised PnL. Both are fixed and pinned.
 
 ---
 
