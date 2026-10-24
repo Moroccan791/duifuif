@@ -207,8 +207,9 @@ Two things to read from this:
 1. **The band is efficient.** At 58.6c the market delivers 57.68%. The price is
    almost exactly right, and the overround is what kills you. There is no free
    money sitting in the middle of the book.
-2. **The only positive band is 65-80c** (+1.20% on 1,498 legs). That is the
-   favourite-longshot bias, it is small, and it is *not* the band you asked for.
+2. **The only positive band was 65-80c** (+1.20% on 1,498 legs) -- **and it does
+   not survive being tested properly. See "The last positive band was noise"
+   below.** Everything in the 50-65c discussion above still stands.
 
 ## And the model actively hurts inside the band
 
@@ -281,3 +282,49 @@ say it cannot. The thing that pays in this repo remains what it always was:
 buying when a *price* is demonstrably below a *sharp de-vigged probability*,
 which is `sports sides` and `sports/edge.py`, and which requires a real
 disagreement with a real book -- not a better guess at team strength.
+
+---
+
+# The last positive band was noise
+
+Earlier I reported 65-80c as +1.20%, the favourite-longshot bias, and held it up
+as the one thing that worked. That was wrong to present. Testing it three ways
+killed it.
+
+Recomputed on 1,584 held-out legs at an average 71.39c:
+
+| | value |
+|---|---|
+| hit rate delivered | 71.72% |
+| break even needed after Polymarket fee | **72.82%** |
+| ROI before fee | +0.46% |
+| ROI after Polymarket fee | **-1.50%** |
+| 95% CI on the no-fee ROI | **[-2.19%, +2.96%]** |
+
+A confidence interval straddling zero, and a point estimate that the fee turns
+negative. It is not an edge; it is a coin landing heads slightly more often than
+tails over 1,584 flips.
+
+The breakdowns confirm it is noise rather than a persistent bias:
+
+**By league** -- if this were the favourite-longshot bias it would appear
+everywhere. It appears in one place:
+
+| league | n | price | hit | no-fee | after fee |
+|--------|---|-------|-----|--------|-----------|
+| SP | 286 | 71.2c | 75.52% | **+6.10%** | +4.01% |
+| F1 | 283 | 71.0c | 72.79% | +2.51% | +0.49% |
+| I1 | 376 | 71.4c | 71.54% | +0.22% | -1.74% |
+| E0 | 386 | 71.7c | 70.21% | -2.11% | -4.00% |
+| D1 | 253 | 71.5c | 68.77% | **-3.87%** | -5.73% |
+
+**By season** -- positive in 2021-2023, negative in 2020, 2024 and 2025.
+
+Spain alone carries the result. That is what a spurious finding looks like: one
+cell does the work and the rest hover around zero. The lesson generalises beyond
+this file -- when a backtest shows a thin positive edge, the first question is
+"which subset is producing it", because the answer is usually one subset and
+therefore usually noise.
+
+So the honest state of the entire band question: **no band pays after fees.**
+50-65c loses 3.71%, 65-80c loses 1.50%, 35-50c loses 6.19%, 80-100c loses 4.61%.
