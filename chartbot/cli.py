@@ -125,6 +125,56 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_today(args: argparse.Namespace) -> int:
+    """One decision. If you only ever run one command, run this one."""
+    from .income import today
+    from .position import PositionConfig
+
+    candles = (load_csv(args.csv, interval_s=86400.0) if args.csv
+               else BinanceClient().klines(args.symbol, "1d", args.lookback))
+    cfg = PositionConfig(sma_window=args.sma, target_vol=args.target_vol)
+    call = today(candles, equity=args.equity, cfg=cfg)
+
+    name = args.csv.rsplit("/", 1)[-1].split(".")[0].upper() if args.csv else args.symbol
+    print(f"{name}   {len(candles):,} daily candles   equity ${args.equity:,.2f}")
+    print(f"price {call.price:,.2f}   {cfg.sma_window}-day avg {call.sma_value:,.2f}   "
+          f"({call.distance:+.1%})")
+    print()
+    print(f"  {call.line(args.equity)}")
+    print()
+    print("Check once a day, after the daily candle closes. Nothing in between.")
+    print("No stop losses: the exit is the average crossing, and a tight stop")
+    print("inside a day fights the signal it is meant to protect.")
+    return 0
+
+
+def cmd_income(args: argparse.Namespace) -> int:
+    """What a daily income target costs, at the returns this strategy has shown."""
+    from .income import capital_for, daily_from_annual, months_to_double
+
+    target = args.target
+    print(f"target: ${target:,.2f} per day  (${target * 365:,.0f} a year)\n")
+    print(f"{'assumed annual return':>24}{'capital needed':>18}{'doubles in':>14}")
+    for label, r in (("41%  BTC backtest", 0.412),
+                     ("31%  3-asset portfolio", 0.310),
+                     ("20%  a defensible haircut", 0.200),
+                     ("15%  realistic going forward", 0.150),
+                     ("8%   BTC long-run average", 0.080)):
+        cap = capital_for(target, r)
+        print(f"{label:>24}{f'${cap:,.0f}':>18}{months_to_double(r)/12:>11.1f} yr")
+
+    if args.capital:
+        print(f"\nwith ${args.capital:,.0f} instead:")
+        for label, r in (("41%", 0.412), ("31%", 0.310), ("20%", 0.200), ("15%", 0.150)):
+            d = daily_from_annual(args.capital, r)
+            print(f"   {label:>4} a year -> ${d:,.2f} a day, ${d * 30:,.0f} a month")
+
+    print("\nThe return is not the lever. The capital is. Doubling the return")
+    print("halves the capital; the spread between an honest 15% and a lucky 41%")
+    print("is not something you get to choose in advance.")
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """Run every documented strategy on the same data with the same costs."""
     from .strategies import (align_and_portfolio, compare, returns_with_dates,
@@ -498,6 +548,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--up", action="store_true", default=True)
     s.add_argument("--svg", default="", help="write the chart to this file")
     s.set_defaults(func=cmd_scan)
+
+    t = common(sub.add_parser("today", help="one decision: what to do right now"))
+    t.add_argument("--sma", type=int, default=50)
+    t.add_argument("--target-vol", type=float, default=0.25, dest="target_vol")
+    t.set_defaults(func=cmd_today)
+
+    inc = sub.add_parser("income", help="what a daily income target costs")
+    inc.add_argument("--target", type=float, default=10.0, help="dollars per day")
+    inc.add_argument("--capital", type=float, default=0.0, help="show what this much makes")
+    inc.set_defaults(func=cmd_income)
 
     c = common(sub.add_parser("compare", help="documented strategies, same data"))
     c.add_argument("--bars", type=int, default=4008)
