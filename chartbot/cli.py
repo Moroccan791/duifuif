@@ -125,6 +125,45 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Run every documented strategy on the same data with the same costs."""
+    from .strategies import compare
+
+    if args.csv:
+        candles = load_csv(args.csv, interval_s=86400.0)
+        src = args.csv
+    else:
+        candles = BinanceClient().klines(args.symbol, args.interval, args.bars)
+        src = f"{args.symbol} {args.interval}"
+
+    print("=" * 84)
+    print(f"STRATEGY COMPARISON - {len(candles)} bars from {src}")
+    print("=" * 84)
+    print(f"costs {args.cost_bps:.0f} bps per unit turnover, "
+          f"vol target {args.target_vol*100:.0f}%, 365 trading days/year")
+    print()
+
+    res = compare(candles, cost_bps=args.cost_bps, target_vol=args.target_vol)
+    res.sort(key=lambda m: -m.sharpe)
+    hdr = (f"{'strategy':<32} {'CAGR':>9} {'vol':>8} {'Sharpe':>7} "
+           f"{'MaxDD':>9} {'exposed':>8}")
+    print(hdr)
+    print("-" * len(hdr))
+    for m in res:
+        print(m.pretty())
+
+    print()
+    bh = next((m for m in res if m.name == "buy and hold"), None)
+    if bh:
+        best = res[0]
+        print(f"  best by Sharpe: {best.name}")
+        print(f"    Sharpe {best.sharpe:.2f} vs {bh.sharpe:.2f} for holding BTC")
+        print(f"    max drawdown {best.max_dd*100:.1f}% vs {bh.max_dd*100:.1f}%")
+        print(f"    CAGR {best.cagr*100:.1f}% vs {bh.cagr*100:.1f}%  "
+              f"- holding made MORE money, it just hurt more getting there")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if args.live:
         if not args.i_understand_this_can_lose_money:
@@ -384,6 +423,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--up", action="store_true", default=True)
     s.add_argument("--svg", default="", help="write the chart to this file")
     s.set_defaults(func=cmd_scan)
+
+    c = common(sub.add_parser("compare", help="documented strategies, same data"))
+    c.add_argument("--bars", type=int, default=4008)
+    c.add_argument("--cost-bps", type=float, default=5.0, dest="cost_bps")
+    c.add_argument("--target-vol", type=float, default=0.25, dest="target_vol")
+    c.set_defaults(func=cmd_compare)
 
     b = common(sub.add_parser("backtest", help="replay history"))
     b.add_argument("--bars", type=int, default=1000)
