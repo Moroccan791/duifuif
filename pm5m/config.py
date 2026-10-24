@@ -72,7 +72,16 @@ class Settings:
     cooldown_after_loss_s: float = 120.0
     min_edge_cents: float = 1.0
     min_remaining_s: float = 20.0
+    min_price: float = 0.02
     max_price: float = 0.985
+    # "taker" crosses the spread and pays the fee; "maker" rests a limit order
+    # inside the spread and pays nothing. At 50-60c the fee is 3.15% of stake,
+    # so taker mode is not viable there -- see `python -m pm5m band`.
+    strategy_mode: str = "taker"
+    maker_edge_cents: float = 1.5   # how far inside fair value we rest our bid
+    maker_quote_shares: float = 50.0
+    maker_requote_s: float = 2.0
+    adverse_selection_cents: float = 0.0  # explicit stress knob, measure it live
     min_z_lock: float = 2.5
 
     # ---- ops -------------------------------------------------------------
@@ -100,7 +109,16 @@ class Settings:
             ),
             min_edge_cents=_env_float("PM5M_MIN_EDGE_CENTS", base.min_edge_cents),
             min_z_lock=_env_float("PM5M_MIN_Z_LOCK", base.min_z_lock),
+            min_price=_env_float("PM5M_MIN_PRICE", base.min_price),
             max_price=_env_float("PM5M_MAX_PRICE", base.max_price),
+            strategy_mode=_env_str("PM5M_STRATEGY_MODE", base.strategy_mode),
+            maker_edge_cents=_env_float("PM5M_MAKER_EDGE_CENTS", base.maker_edge_cents),
+            maker_quote_shares=_env_float(
+                "PM5M_MAKER_QUOTE_SHARES", base.maker_quote_shares
+            ),
+            adverse_selection_cents=_env_float(
+                "PM5M_ADVERSE_SELECTION_CENTS", base.adverse_selection_cents
+            ),
             latency_s=_env_float("PM5M_LATENCY_S", base.latency_s),
             taker_fee_rate=_env_float("PM5M_TAKER_FEE_RATE", base.taker_fee_rate),
             live=_env_bool("PM5M_LIVE", base.live),

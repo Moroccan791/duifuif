@@ -20,62 +20,121 @@ from .config import Settings
 from .fees import fee_as_pct_of_stake, taker_fee_per_share
 
 
-def cmd_demo(args: argparse.Namespace) -> int:
-    from .sim import breakeven_edge_cents, run_simulation
+def _band_settings(mode: str, lo: float, hi: float) -> Settings:
+    from dataclasses import replace
 
+    return replace(
+        Settings(),
+        strategy_mode=mode,
+        min_price=lo,
+        max_price=hi,
+        min_z_lock=0.0,
+        min_edge_cents=0.5,
+        maker_edge_cents=1.5,
+        maker_quote_shares=40.0,
+        maker_requote_s=2.0,
+    )
+
+
+def cmd_band(args: argparse.Namespace) -> int:
+    """The economics of the price band you want to trade in."""
     settings = Settings()
-    print("=" * 74)
+    print("=" * 84)
+    print("TAKER vs MAKER ECONOMICS BY PRICE BAND")
+    print("=" * 84)
+    print(
+        "A contract bought at p pays 1.00 if it wins. So the break-even win rate is\n"
+        "simply your all-in cost per share. Takers pay the fee; makers do not.\n"
+    )
+    header = (
+        f"{'price':>6} {'fee/sh':>7} {'fee %stake':>11} "
+        f"{'TAKER need':>11} {'edge vs mkt':>12} {'MAKER need':>11} {'payout':>8}"
+    )
+    print(header)
+    print("-" * len(header))
+    for p in (0.50, 0.52, 0.55, 0.58, 0.60, 0.65, 0.75, 0.85, 0.95):
+        fee = taker_fee_per_share(p, settings.taker_fee_rate)
+        taker_need = p + fee
+        payout = (1 - p) / p
+        print(
+            f"{p:6.2f} {fee * 100:6.2f}c {fee / p * 100:10.2f}% "
+            f"{taker_need * 100:10.2f}% {(taker_need - p) * 100:10.2f}pp "
+            f"{p * 100:10.2f}% {payout * 100:7.1f}%"
+        )
+    print(
+        "\nReading it: at 55c a taker must be right 56.73% of the time against a\n"
+        "market implying 55% -- a 1.73pp forecasting edge on every trade. A maker\n"
+        "needs only 55%, because the fee is zero. That asymmetry is the entire\n"
+        "argument for quoting in this band instead of taking."
+    )
+    return 0
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    from .sim import run_simulation
+
+    base = Settings()
+    print("=" * 84)
     print("ADVERSARIAL SIMULATION - this harness is built to falsify the strategy")
-    print("=" * 74)
+    print("=" * 84)
+    fee50 = taker_fee_per_share(0.50, base.taker_fee_rate)
     print(
-        f"taker fee at 50c: {fee_as_pct_of_stake(0.50):.2%} of stake per entry "
-        f"({taker_fee_per_share(0.50) * 100:.2f}c/share)"
+        f"taker fee at 50c: {fee50 * 100:.2f}c/share "
+        f"({fee_as_pct_of_stake(0.50):.2%} of stake)   maker fee: 0"
     )
-    print(
-        f"taker fee at 95c: {fee_as_pct_of_stake(0.95):.2%} of stake "
-        f"({taker_fee_per_share(0.95) * 100:.2f}c/share)"
-    )
-    print(
-        f"break-even fee at 95c: {breakeven_edge_cents(settings, 0.95):.2f}c/share\n"
-    )
+    print("run `python -m pm5m band` for the full price table\n")
 
     scenarios = [
         (
-            "A. fair maker, no basis risk, no vol error",
-            dict(maker_efficiency=1.0, basis_sd=0.0, sigma_noise_sd=0.0),
-            "the bot has no advantage, so it should barely trade",
+            "A. TAKER in 50-60c, fair counterparty",
+            _band_settings("taker", 0.50, 0.60),
+            dict(counterparty="fair", basis_sd=2e-5, sigma_noise_sd=0.5),
+            "should refuse to trade: no edge, and the fee is 3% of stake",
         ),
         (
-            "B. fair maker, realistic basis risk (2bp) + vol error",
-            dict(maker_efficiency=1.0, basis_sd=2e-5, sigma_noise_sd=0.5),
-            "the honest default: does a noisy model make money?",
+            "B. MAKER in 50-60c, fair counterparty",
+            _band_settings("maker", 0.50, 0.60),
+            dict(counterparty="fair", basis_sd=2e-5, sigma_noise_sd=0.5,
+                 counterparty_noise_cents=1.5),
+            "adverse selection vs an informed book: the honest default",
         ),
         (
-            "C. slow maker (quotes halfway to 50/50)",
-            dict(maker_efficiency=0.5, basis_sd=2e-5, sigma_noise_sd=0.5),
-            "the world you would need to exist",
+            "C. MAKER in 50-60c, spot-watching counterparty",
+            _band_settings("maker", 0.50, 0.60),
+            dict(counterparty="naive_spot", basis_sd=2e-5, sigma_noise_sd=0.5,
+                 counterparty_noise_cents=1.5),
+            "THE HYPOTHESIS: the book ignores that settlement is an average",
         ),
         (
-            "D. clueless maker (always quotes 50/50)",
-            dict(maker_efficiency=0.0, basis_sd=2e-5, sigma_noise_sd=0.5),
-            "upper bound on the prize, not a forecast",
+            "D. MAKER in 50-60c, slightly stale counterparty",
+            _band_settings("maker", 0.50, 0.60),
+            dict(counterparty="lagged", lag_ticks=3, basis_sd=2e-5,
+                 sigma_noise_sd=0.5, counterparty_noise_cents=1.5),
+            "the book is 6s behind the true fair value",
+        ),
+        (
+            "E. TAKER in 50-60c, spot-watching counterparty",
+            _band_settings("taker", 0.50, 0.60),
+            dict(counterparty="naive_spot", basis_sd=2e-5, sigma_noise_sd=0.5),
+            "same mispricing, but we pay 3% to reach it",
         ),
     ]
 
-    for title, kwargs, note in scenarios:
-        res = run_simulation(
-            settings, n_windows=args.windows, seed=args.seed, **kwargs
-        )
+    for title, cfg, kwargs, note in scenarios:
+        res = run_simulation(cfg, n_windows=args.windows, seed=args.seed, **kwargs)
         print(f"--- {title} ---")
         print(f"    ({note})")
         print(res.pretty())
         print()
 
     print(
-        "Read scenarios A and B as the verdict, and C and D as the requirement:\n"
-        "  you only make money if your counterparty is materially slower or worse\n"
-        "  informed than you are, and you must be right by more than the spread\n"
-        "  plus the fee, every window, for thousands of windows."
+        "How to read this:\n"
+        "  A and B are the verdict on mid-range trading with an informed book.\n"
+        "  C and D are the only worlds where 50-60c works, and they require the\n"
+        "  counterparty to be systematically wrong. E shows that even when they\n"
+        "  are wrong, paying the taker fee at 55c eats a large share of it.\n"
+        "  Whether C or D resembles reality is not a modelling question -- it is\n"
+        "  what `record` and `backtest` exist to answer, using your own fills."
     )
     return 0
 
@@ -236,6 +295,9 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    b = sub.add_parser("band", help="taker vs maker economics by price")
+    b.set_defaults(func=cmd_band)
 
     d = sub.add_parser("demo", help="offline simulation of the mechanics")
     d.add_argument("--windows", type=int, default=200)

@@ -24,12 +24,13 @@ from dataclasses import dataclass, field
 
 from .broker import PaperBroker
 from .config import Settings
+from .maker import Quote, plan_quotes, quote_is_filled
 from .model import fair_up
 from .risk import RiskManager
 from .settlement import SettlementIndex
 from .storage import Store
 from .strategy import evaluate, size_signal
-from .types import Book, Market
+from .types import Book, Market, Signal
 
 
 @dataclass
@@ -42,6 +43,8 @@ class WindowState:
     last_p_up: float | None = None
     mid_p_up: float | None = None
     traded: bool = False
+    quotes: dict[str, Quote] = field(default_factory=dict)
+    last_quote_ts: float = 0.0
 
 
 @dataclass
@@ -162,6 +165,10 @@ class Engine:
         if ws.mid_p_up is None and ws.index.remaining_tau(now) <= ws.market.duration / 2:
             ws.mid_p_up = view.p_up
 
+        if self.settings.strategy_mode == "maker":
+            self._maker_step(ws, books, spot, sigma, now)
+            return
+
         signals = evaluate(
             ws.market, ws.index, books, spot, sigma, now, self.settings
         )
@@ -201,6 +208,70 @@ class Engine:
             f"BUY {sig.side.upper()} {fill.shares:.2f}@{fill.price:.3f} "
             f"fee={fill.fee:.3f} {ws.market.slug}"
         )
+
+    def _maker_step(self, ws: WindowState, books: dict[str, Book], spot: float, sigma: float, now: float) -> None:
+        """Rest quotes, and check whether any resting quote was hit.
+
+        Fill check runs before re-quoting: a quote that was live when the last
+        book update arrived may already be filled by this one, and cancel/replace
+        logic that ignores that will silently under-report fills.
+        """
+        for token in list(ws.quotes):
+            q = ws.quotes[token]
+            book = books.get(q.side)
+            if book is None or not quote_is_filled(q, book):
+                continue
+            ws.quotes.pop(token, None)
+            sig = Signal(
+                market_slug=ws.market.slug,
+                token_id=q.token_id,
+                side=q.side,
+                limit_price=q.price,
+                p_true=q.fair,
+                edge_per_share=q.edge,
+                reason=(
+                    f"maker fill {q.side} @{q.price:.3f} fair={q.fair:.4f} "
+                    f"edge={q.edge:.4f} ask={book.best_ask:.3f}"
+                ),
+                meta={"cost_per_share": q.price, "remaining_s": ws.index.remaining_tau(now)},
+            )
+            decision = self.risk.check(sig, now)
+            if not decision.allowed:
+                if self.store:
+                    self.store.add_signal(now, sig, False, decision.reason)
+                self._note(f"maker veto {ws.market.slug} {sig.side}: {decision.reason}")
+                continue
+            fill = self.broker.execute(sig, book, q.shares, now, as_maker=True)
+            if fill is None:
+                continue
+            ws.traded = True
+            self.signals_taken += 1
+            if self.store:
+                self.store.add_signal(now, sig, True, "maker fill")
+                self.store.add_fill(fill)
+            self._note(
+                f"MAKER BUY {sig.side.upper()} {fill.shares:.2f}@{fill.price:.3f} "
+                f"fee=0 {ws.market.slug}"
+            )
+
+        if ws.traded or now - ws.last_quote_ts < self.settings.maker_requote_s:
+            return
+        ws.last_quote_ts = now
+        held = {p.token_id for p in self.broker.positions.values()}
+        ws.quotes = {
+            q.token_id: q
+            for q in plan_quotes(
+                ws.market,
+                ws.index,
+                books,
+                spot,
+                sigma,
+                now,
+                self.settings,
+                self.risk,
+                held,
+            )
+        }
 
     # ---- housekeeping ----------------------------------------------------
     def tick(self, now: float, outcome_fn=None) -> None:

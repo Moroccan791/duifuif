@@ -71,9 +71,94 @@ beatable with public data after fees without sub-second, two-legged execution.
 `pm5m sim` scenario B — an informed counterparty plus realistic basis risk —
 reproduces that result from first principles: **−5.9% ROI**, not profit.
 
+
 ---
 
-## 2. What is actually buildable
+## 2. If you specifically want 50–60¢
+
+This is the more interesting request, and it changes the design. At 55¢ a taker
+pays 1.73¢ per share — **3.15% of stake** — so break-even moves from 55% to
+**56.73%**. You would need to be 1.73 percentage points more accurate than the
+market on every trade, forever. That is a real forecasting requirement, and it
+is why taker mode should be off in this band.
+
+A maker pays **zero** and rests inside the spread, so break-even drops to the
+quote price itself:
+
+```
+ price  fee/sh  fee %stake  TAKER need  edge vs mkt  MAKER need   payout
+  0.50   1.75c       3.50%      51.75%       1.75pp      50.00%   100.0%
+  0.55   1.73c       3.15%      56.73%       1.73pp      55.00%    81.8%
+  0.60   1.68c       2.80%      61.68%       1.68pp      60.00%    66.7%
+```
+
+`python -m pm5m band` prints the full table. **The conclusion is structural: in
+this band you quote, you do not take.** That is what `pm5m/maker.py` does.
+
+### The one mechanism that could make mid-range work
+
+Settlement is a *path average*, not a spot comparison. Most participants appear
+to price the market as "will BTC finish above the open?" — which is a different
+question, and the difference is largest exactly in the 50–60¢ region, where
+nothing is decided yet. If the book is pricing the spot question while
+settlement resolves the average question, there is a genuine edge, and it is
+biggest at mid prices.
+
+That is a **hypothesis, not a fact**, so the simulator lets you test it against
+a counterparty that prices the spot question:
+
+| scenario | win rate | ROI |
+|---|---|---|
+| A. taker, fair counterparty | 28.6% | **−51.8%** |
+| B. maker, fair counterparty | 46.7% | **−16.3%** |
+| C. maker, spot-watching counterparty | 63.4% | **+16.8%** |
+| D. maker, counterparty 6s stale | 66.7% | **+27.0%** |
+| E. taker, spot-watching counterparty | 54.5% | **−19.7%** |
+
+Three things to take from that table:
+
+* **B is the honest default.** Against an informed book, a mid-range maker loses
+  16% with zero fees. That loss is pure adverse selection: your resting bid is
+  only hit when informed flow disagrees with you. This is what kills naive
+  market makers, and it emerges from the fill mechanism rather than being
+  assumed.
+* **C and D are the only worlds where this works**, and both require the
+  counterparty to be systematically wrong.
+* **E is the punchline.** Even when the mispricing is real, takers lose money
+  reaching it because the 3% fee eats the edge. A vs E is the entire argument
+  for maker mode.
+
+So: is a profitable 50–60¢ bot possible? Only if your counterparty is wrong in a
+specific, measurable way. `pm5m record` → `pm5m backtest` is how you find out
+whether it is, using your own fills and your own adverse-selection number —
+which you cannot derive from a model.
+
+### Making it concrete
+
+```python
+from dataclasses import replace
+from pm5m.config import Settings
+
+settings = replace(
+    Settings(),
+    strategy_mode="maker",   # not "taker"
+    min_price=0.50,
+    max_price=0.60,
+    maker_edge_cents=1.5,    # rest 1.5c inside fair value
+    maker_quote_shares=40.0,
+)
+```
+
+Or set `PM5M_STRATEGY_MODE=maker PM5M_MIN_PRICE=0.50 PM5M_MAX_PRICE=0.60`.
+
+Failures to expect, in order of likelihood: you get filled only on losers
+(adverse selection), your bid never fills at all (you are too far inside), or
+you fill fine and lose the fee-sized edge to someone faster. All three are
+visible in `pm5m report`.
+
+---
+
+## 3. What is actually buildable
 
 | Component | File | Status |
 |---|---|---|
@@ -86,16 +171,17 @@ reproduces that result from first principles: **−5.9% ROI**, not profit.
 | SQLite recorder + replay backtester | `pm5m/storage.py`, `backtest.py` | complete |
 | Gamma/CLOB/WS clients | `pm5m/feeds.py` | complete |
 | Spot feeds (Binance/Coinbase/OKX/Bybit) | `pm5m/spot.py` | complete |
+| Mid-range maker strategy (50–60c) | `pm5m/maker.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
-| Adversarial simulator | `pm5m/sim.py` | complete |
+| Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-93 tests. Two of them exist specifically because the simulator once reported a
+60 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 
 ---
 
-## 3. Quickstart
+## 4. Quickstart
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e .
@@ -132,7 +218,7 @@ refuses to start. There is no silent fallback from live to paper.
 
 ---
 
-## 4. The model
+## 5. The model
 
 Let `L` be window length, `K` the integral of observed prices so far, `P₀` the
 open, `τ` the time remaining, and `R` the unknown integral over the remaining
@@ -165,7 +251,7 @@ the simulator charges you for it by default.
 
 ---
 
-## 5. What would have to be true for this to work
+## 6. What would have to be true for this to work
 
 Not "it doesn't work" — but here is the honest list of requirements, all of
 which must hold simultaneously:
@@ -195,7 +281,7 @@ one loss erases nineteen wins.
 
 ---
 
-## 6. Architecture
+## 7. Architecture
 
 ```
 spot feed ──┐
@@ -214,7 +300,7 @@ and safe to run live.
 
 ---
 
-## 7. Operating rules
+## 8. Operating rules
 
 * **Never put a private key in a file that is committed.** It belongs in the
   environment. `.env` is gitignored; there is no code that reads one.
@@ -234,7 +320,7 @@ to lose, is the actual risk here — not the model.
 
 ---
 
-## 8. Honest limitations
+## 9. Honest limitations
 
 * Spot feeds are proxies for Chainlink's TWAP; the basis is measurable but not
   currently corrected.
@@ -245,3 +331,8 @@ to lose, is the actual risk here — not the model.
   costs.
 * Live execution is untested against a funded account by necessity. Treat the
   live path as reviewed-but-unproven.
+* **Maker mode is paper-only.** `live_gates` refuses to arm it, because the live
+  order client can only send marketable orders -- running a maker strategy
+  through it would silently pay the fee the strategy exists to avoid. Real maker
+  execution needs place/cancel/replace plus fill confirmation from the user
+  websocket. That is the next honest piece of work, not something to fake.

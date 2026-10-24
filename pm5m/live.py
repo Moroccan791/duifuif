@@ -62,6 +62,16 @@ def live_gates(settings: Settings, acknowledged: bool) -> list[str]:
         import py_clob_client  # noqa: F401
     except ImportError:
         closed.append("py-clob-client not installed (pip install '.[live]')")
+    if settings.strategy_mode == "maker":
+        # LiveBroker only knows how to send marketable FAK orders. Running the
+        # maker strategy through it would silently convert every quote into a
+        # taker order -- paying the exact fee the strategy exists to avoid.
+        # Real maker execution needs place/cancel/replace plus fill confirmation
+        # from the user websocket, which is not implemented. Refuse honestly.
+        closed.append(
+            "maker live execution is not implemented "
+            "(needs order lifecycle mgmt); use paper mode"
+        )
     return closed
 
 

@@ -1,26 +1,26 @@
 """Adversarial simulation harness.
 
-The first version of this file priced the book from the bot's own model, so the
-simulator could only ever report profit -- a straight arbitrage of itself. That
-is the single most common way trading backtests lie, so it is gone.
+This harness exists to FALSIFY strategies, not to flatter them. An earlier
+version priced the book from the bot's own model, so the bot was arbitraging
+itself and the harness reported a 9,000% return. Everything here is arranged so
+that cannot happen silently.
 
-This harness is built to FALSIFY the strategy. It models the three things that
-actually decide the outcome in production:
+Four things decide the outcome in production, and all four are modelled:
 
-1. **The counterparty is better informed than you.** By default, the market
-   maker quotes at the *true* fair value of the settlement index (it knows
-   sigma). If a bot has no informational advantage, it can only lose: it pays
-   the spread and the fee, and its own estimation error does the rest.
-2. **Basis risk.** Settlement uses Chainlink's BTC/USD 60s TWAP; the bot sees
-   some other venue. `basis_sd` applies a persistent per-window log offset
-   between the two. This is a *systematic* error, not noise you can average out.
-3. **Sigma estimation error.** The bot estimates vol from a finite window while
-   sigma drifts. `sigma_noise_sd` perturbs the bot's estimate, independently of
-   the truth.
-
-Set `maker_efficiency=0` to see the opposite extreme: a market maker quoting
-stale prices. That is the world you would need for this to work, and the whole
-point is to ask honestly whether it resembles reality.
+1. **The counterparty.** `counterparty="fair"` means the book quotes the true
+   fair value of the settlement index. A bot with no informational advantage
+   then pays the spread and loses. `counterparty="naive_spot"` means the book
+   prices "will it finish above the open?" -- the retail model, which ignores
+   the averaging. That is the one plausible source of genuine mid-range
+   mispricing, and it is a hypothesis you test, not an assumption you make.
+2. **Quote noise.** A resting bid only fills when someone wants to sell to you,
+   which is precisely when the thing is about to be worth less. This is adverse
+   selection, and it emerges here endogenously from the fill condition.
+3. **Basis risk.** Settlement uses Chainlink's BTC/USD 60s TWAP; the bot sees a
+   different venue. `basis_sd` applies a persistent per-window log offset. This
+   is a systematic error, not noise you can average out.
+4. **Sigma estimation error.** `sigma_noise_sd` perturbs the bot's vol estimate
+   independently of the truth.
 """
 
 from __future__ import annotations
@@ -31,9 +31,10 @@ from dataclasses import dataclass, field
 
 from .broker import PaperBroker
 from .config import Settings
-from .engine import Engine, WindowState
-from .model import fair_up
+from .engine import Engine
+from .model import fair_up, norm_cdf
 from .risk import RiskManager
+from .settlement import SettlementIndex
 from .types import Book, Level, Market
 from .vol import SpotBuffer
 
@@ -50,6 +51,7 @@ class SimResult:
     brier: float = 0.0
     accuracy: float = 0.0
     scored: int = 0
+    avg_price: float = 0.0
     log: list[str] = field(default_factory=list)
 
     @property
@@ -59,7 +61,8 @@ class SimResult:
     def pretty(self) -> str:
         lines = [
             f"windows simulated : {self.windows}",
-            f"trades            : {self.trades}",
+            f"trades            : {self.trades}"
+            + (f"  avg fill {self.avg_price * 100:.1f}c" if self.trades else ""),
             f"outcome           : {self.wins}W / {self.losses}L"
             + (f"  ({self.wins / self.trades:.1%} win rate)" if self.trades else ""),
             f"total staked      : ${self.staked:,.2f}",
@@ -70,10 +73,22 @@ class SimResult:
         if self.scored:
             lines.append(
                 f"model brier       : {self.brier:.4f} "
-                f"(0.25 = coin flip, lower is better; {self.scored} windows)"
+                f"(0.25 = coin flip; {self.scored} windows)"
             )
-            lines.append(f"model accuracy    : {self.accuracy:.1%}")
         return "\n".join(lines)
+
+
+def retail_p_up(spot: float, open_price: float, sigma: float, tau: float) -> float:
+    """How a spot-watcher prices it: "will it finish above the open?"
+
+    Ignores that settlement is a path average. This is what most participants
+    appear to do, and it is the most plausible source of real mid-range
+    mispricing -- a hypothesis, not a fact.
+    """
+    if tau <= 1.0 or spot <= 0 or open_price <= 0:
+        return 1.0 if spot > open_price else 0.0
+    z = math.log(spot / open_price) / (sigma * math.sqrt(tau))
+    return min(0.999, max(0.001, norm_cdf(z)))
 
 
 def _synth_path(
@@ -95,6 +110,16 @@ def _path_average(path: list[float], dt: float) -> float:
     return total / (dt * (len(path) - 1))
 
 
+def _index_upto(path: list[float], dt: float, start: float, end: float) -> SettlementIndex:
+    """Settlement index of the TRUE path. `end` must be the real window close:
+    using the elapsed time instead makes the counterparty believe the window has
+    already ended, which hands the bot free money."""
+    st = SettlementIndex(start_ts=start, end_ts=end, open_price=path[0])
+    for i, p in enumerate(path):
+        st.add(start + i * dt, p)
+    return st
+
+
 def run_simulation(
     settings: Settings | None = None,
     n_windows: int = 200,
@@ -105,16 +130,18 @@ def run_simulation(
     basis_sd: float = 0.0,
     sigma_noise_sd: float = 0.0,
     maker_efficiency: float = 1.0,
+    counterparty_noise_cents: float = 0.0,
+    counterparty: str = "fair",
+    lag_ticks: int = 3,
     seed: int = 11,
     dt: float = 2.0,
 ) -> SimResult:
-    """Simulate `n_windows` consecutive windows against an informed maker.
+    """Simulate consecutive 5-minute windows.
 
     maker_efficiency: 1.0 = quotes true fair value (strong opponent),
-                      0.0 = quotes a fixed 50/50 (clueless opponent).
-    basis_sd:         sd of the persistent log offset between our feed and the
-                      settlement feed, per window. 2e-5 is 2bp (~$2 on 100k).
-    sigma_noise_sd:   sd of log error in the bot's sigma estimate, per window.
+                      0.5 = quotes halfway to 50/50,
+                      0.0 = always quotes 50/50 (clueless).
+    counterparty:     "fair" | "naive_spot" | "lagged"
     """
     settings = settings or Settings(bankroll_usd=1000.0)
     rng = random.Random(seed)
@@ -137,15 +164,14 @@ def run_simulation(
     spot = spot0
     t0 = 1_700_000_000.0
     half = half_spread_cents / 100.0
+    noise_sd = counterparty_noise_cents / 100.0
 
     for w in range(n_windows):
         start = t0 + w * window_s
         end = start + window_s
         path = _synth_path(rng, spot, sigma, n_ticks, dt)
 
-        # The bot's feed is offset from the settlement feed for the whole window.
         basis = rng.gauss(0.0, basis_sd) if basis_sd else 0.0
-        # The bot's vol estimate is wrong in a way it cannot detect.
         engine.sigma_override = (
             sigma * math.exp(rng.gauss(0.0, sigma_noise_sd))
             if sigma_noise_sd
@@ -163,79 +189,73 @@ def run_simulation(
             open_price=path[0] * math.exp(basis),
         )
         engine.on_market(mk)
+        fair_hist: list[float] = []
 
         for i, p_true in enumerate(path):
             ts = start + i * dt
-            observed = p_true * math.exp(basis)
-            engine.on_spot(ts, observed)
+            engine.on_spot(ts, p_true * math.exp(basis))
 
-            # Maker fair value is computed from the TRUE path at the TRUE sigma.
-            maker_p_up = fair_up(
-                _true_index(path[: i + 1], dt, start, end),
-                p_true,
-                sigma,
-                ts,
-            ).p_up
-            if maker_efficiency < 1.0:
-                maker_p_up = maker_efficiency * maker_p_up + (1 - maker_efficiency) * 0.5
-            ask_up = min(0.99, max(0.01, maker_p_up + half))
-            ask_dn = min(0.99, max(0.01, (1 - maker_p_up) + half))
+            true_idx = _index_upto(path[: i + 1], dt, start, end)
+            tau = end - ts
+            fair_true = fair_up(true_idx, p_true, sigma, ts).p_up
+            fair_hist.append(fair_true)
 
-            for token, ask in ((mk.token_up, ask_up), (mk.token_down, ask_dn)):
+            if counterparty == "naive_spot":
+                cp = retail_p_up(p_true, path[0], sigma, tau)
+            elif counterparty == "lagged":
+                cp = fair_hist[max(0, i - lag_ticks)]
+            else:
+                cp = fair_true
+            cp = maker_efficiency * cp + (1 - maker_efficiency) * 0.5
+            if noise_sd:
+                cp = min(0.999, max(0.001, cp + rng.gauss(0.0, noise_sd)))
+
+            ask_up = min(0.995, max(0.005, cp + half))
+            ask_dn = min(0.995, max(0.005, (1 - cp) + half))
+            for token, ask, side in (
+                (mk.token_up, ask_up, "up"),
+                (mk.token_down, ask_dn, "down"),
+            ):
                 engine.on_book(
                     Book(
                         token_id=token,
                         ts=ts,
-                        bids=(Level(max(0.01, ask - 2 * half), book_size),),
+                        bids=(Level(max(0.005, ask - 2 * half), book_size),),
                         asks=(Level(ask, book_size),),
                     ),
-                    "up" if token == mk.token_up else "down",
+                    side,
                     mk.slug,
                 )
 
-        # Score against the true settlement, then settle at the true outcome.
         ws = engine.windows.get(mk.slug)
-        # Score calibration mid-window, not at the last tick. Late in the window
-        # the outcome is nearly decided and every model scores well; that would
-        # flatter the Brier score into meaninglessness.
-        p_final = ws.mid_p_up if ws and ws.mid_p_up is not None else 0.5
+        p_mid = ws.mid_p_up if ws and ws.mid_p_up is not None else 0.5
         true_avg = _path_average(path, dt)
         outcome_up = true_avg >= path[0]
-        briers.append((p_final - (1.0 if outcome_up else 0.0)) ** 2)
-        correct += int((p_final > 0.5) == outcome_up)
+        briers.append((p_mid - (1.0 if outcome_up else 0.0)) ** 2)
+        correct += int((p_mid > 0.5) == outcome_up)
         scored += 1
 
         engine.tick(end + 1e-6, outcome_fn=lambda _ws, up=outcome_up: "up" if up else "down")
         spot = path[-1]
 
+    staked = sum(f.notional + f.fee for f in broker.fills)
     result.windows = n_windows
     result.trades = broker.n_trades
     result.wins = broker.n_wins
     result.losses = broker.n_losses
     result.pnl = broker.realized_pnl
     result.fees = broker.fees_paid
-    result.staked = sum(f.notional + f.fee for f in broker.fills)
+    result.staked = staked
+    result.avg_price = (
+        sum(f.price * f.shares for f in broker.fills) / sum(f.shares for f in broker.fills)
+        if broker.fills
+        else 0.0
+    )
     result.log = engine.log[-40:]
     result.scored = scored
     result.accuracy = correct / scored if scored else 0.0
     result.brier = sum(briers) / len(briers) if briers else 0.25
     return result
-
-
-def _true_index(true_path, dt, start, end):
-    """Settlement index built from the TRUE path, for the maker's fair value.
-
-    `end` must be the real window close. Getting this wrong (using the elapsed
-    time instead) makes the maker believe the window has already ended, which
-    makes it quote fake certainty and hands the bot free money -- a bug that
-    once made this simulator report a 9,000% return.
-    """
-    from .settlement import SettlementIndex
-
-    st = SettlementIndex(start_ts=start, end_ts=end, open_price=true_path[0])
-    for i, p in enumerate(true_path):
-        st.add(start + i * dt, p)
-    return st
 
 
 def breakeven_edge_cents(settings: Settings, price: float = 0.95) -> float:

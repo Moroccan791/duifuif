@@ -82,7 +82,7 @@ def evaluate(
         entry = _entry_price(book, market.tick_size, settings.slippage_ticks)
         if entry is None:
             continue
-        if entry > settings.max_price:
+        if not (settings.min_price <= entry <= settings.max_price):
             continue
         fee_ps = taker_fee_per_share(entry, settings.taker_fee_rate)
         cost = entry + fee_ps

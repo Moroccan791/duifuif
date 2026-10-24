@@ -32,16 +32,28 @@ class PaperBroker:
     n_wins: int = 0
     n_losses: int = 0
 
-    def execute(self, signal: Signal, book: Book, shares: float, now: float) -> Fill | None:
+    def execute(
+        self, signal: Signal, book: Book, shares: float, now: float, as_maker: bool = False
+    ) -> Fill | None:
+        """Fill against the book. `as_maker=True` means our resting order was hit:
+        the fee is zero, because makers are never charged."""
         if shares <= 0:
             return None
-        filled, notional = book.walk_buy(
-            signal.limit_price, shares, self.settings.max_book_fraction
-        )
-        if filled <= 0:
-            return None
-        vwap = notional / filled
-        fee = taker_fee(filled, vwap, self.settings.taker_fee_rate)
+        if as_maker:
+            if book.best_ask is None or book.best_ask > signal.limit_price + 1e-9:
+                return None
+            filled = shares
+            vwap = signal.limit_price
+            notional = filled * vwap
+            fee = 0.0
+        else:
+            filled, notional = book.walk_buy(
+                signal.limit_price, shares, self.settings.max_book_fraction
+            )
+            if filled <= 0:
+                return None
+            vwap = notional / filled
+            fee = taker_fee(filled, vwap, self.settings.taker_fee_rate)
 
         existing = self.positions.get(signal.token_id)
         if existing is None:
