@@ -93,6 +93,63 @@ The honest ladder from here, cheapest first: build capital in something with a
 real, boring edge (index funds, a job); paper-trade this thing until your fills
 show a measurable edge; only then risk money you can lose entirely.
 
+
+---
+
+## 0.5 How the 1% actually get there
+
+The 1% are not separated from the 97% by conviction, or by a better indicator.
+They are separated by **two habits**, both of which are boring and both of which
+this repo implements:
+
+1. **They measure the edge before sizing it.** Not "am I up?" — "is my
+   expectancy per trade statistically distinguishable from zero?"
+2. **They size on the lower confidence bound**, not the point estimate.
+
+`python -m pm5m expectancy` is that measurement. Here is why it matters, using
+a strategy with a *genuinely real* 58% win rate at a 55¢ entry:
+
+| trades | observed | verdict |
+|---|---|---|
+| 25 | +52% win rate | INCONCLUSIVE — CI spans 30 percentage points |
+| 400 | 56.5% win, p=**0.27** | NOT DISTINGUISHABLE FROM LUCK |
+| 2,000 | significant | EDGE SUPPORTED |
+
+**A real edge worth +$1.20/trade needs roughly 1,700 trades to prove at 80%
+power.** That is the number nobody tells you. It means:
+
+* A week of good results is not evidence. It is a sample.
+* A month of good results is still not evidence.
+* If you size up on 25 winning trades, you are betting on a coin flip that
+  happened to land heads four times in a row.
+
+The tool also computes the things that stop people from fooling themselves:
+
+* **Wilson confidence interval on win rate** — correct at small n, unlike the
+  normal approximation that produces "60% win rate!" from 20 trades.
+* **Bootstrap CI on expectancy** — trades are fat-tailed and bounded, so
+  normality is the wrong assumption.
+* **Bonferroni correction for the number of variants you tried.** Test 20
+  strategies and one will look profitable at p<0.05 by construction. Pass
+  `--variants 20` and the tool will say so.
+* **Half-split regime check** — flags when the edge changes between the first
+  and second half of the sample, which is what overfitting looks like.
+* **Conservative Kelly** on the *lower* bound of the win-rate CI. If that bound
+  is below break-even, the size is exactly zero. This is why the tool answers
+  "0.00% of bankroll" far more often than people expect — and why it keeps
+  accounts alive long enough to find out whether an edge was real.
+
+### The discipline this implies
+
+```
+paper trade  →  expectancy says p<0.05 and CI is above zero  →  size up slowly
+             →  anything else                                 →  do not size up
+```
+
+That is the entire secret. Not a prediction model — a **decision rule about your
+own evidence**. It is available to anyone, it costs nothing, and almost nobody
+follows it, which is precisely why it works as an edge on its own.
+
 ---
 
 ## 1. The economics, with numbers
@@ -253,10 +310,11 @@ visible in `pm5m report`.
 | Spot feeds (Binance/Coinbase/OKX/Bybit) | `pm5m/spot.py` | complete |
 | Mid-range maker strategy (50–60c) | `pm5m/maker.py` | complete, tested |
 | Goal arithmetic + ruin Monte Carlo | `pm5m/goals.py` | complete, tested |
+| Expectancy / significance testing | `pm5m/expectancy.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
 | Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-72 tests. Two of them exist specifically because the simulator once reported a
+95 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 

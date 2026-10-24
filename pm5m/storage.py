@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS fills (
     price REAL, fee REAL, notional REAL, reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS trades (
+    ts REAL, slug TEXT, side TEXT, price REAL, shares REAL,
+    fee REAL, won INTEGER, pnl REAL
+);
+CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
+
 CREATE TABLE IF NOT EXISTS settlements (
     ts REAL, slug TEXT, outcome TEXT, open_price REAL, avg_price REAL,
     pnl REAL, model_p_up REAL
@@ -183,6 +189,14 @@ class Store:
         )
         self.conn.commit()
 
+    def add_trade(self, t) -> None:
+        self.conn.execute(
+            """INSERT INTO trades (ts, slug, side, price, shares, fee, won, pnl)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (t.ts, t.slug, t.side, t.price, t.shares, t.fee, int(t.won), t.pnl),
+        )
+        self.conn.commit()
+
     # ---- queries ---------------------------------------------------------
     def spot_window(self, t0: float, t1: float, venue: str | None = None) -> list[tuple[float, float]]:
         if venue:
@@ -204,6 +218,27 @@ class Store:
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    def trade_records(self):
+        """Completed trades as TradeRecord objects, for expectancy analysis."""
+        from .expectancy import TradeRecord
+
+        cur = self.conn.execute(
+            "SELECT ts, slug, side, price, shares, fee, won, pnl FROM trades ORDER BY ts"
+        )
+        return [
+            TradeRecord(
+                ts=float(r[0]),
+                slug=r[1],
+                side=r[2],
+                price=float(r[3]),
+                shares=float(r[4]),
+                fee=float(r[5]),
+                won=bool(r[6]),
+                pnl=float(r[7]),
+            )
+            for r in cur.fetchall()
+        ]
+
     def settled(self) -> list[dict[str, Any]]:
         cur = self.conn.execute(
             "SELECT * FROM settlements ORDER BY ts"
@@ -218,7 +253,7 @@ class Store:
 
     def counts(self) -> dict[str, int]:
         out = {}
-        for table in ("markets", "spot", "books", "signals", "fills", "settlements"):
+        for table in ("markets", "spot", "books", "signals", "fills", "trades", "settlements"):
             out[table] = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         return out
 

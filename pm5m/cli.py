@@ -36,6 +36,63 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_expectancy(args: argparse.Namespace) -> int:
+    """Is the edge real? The only question that matters before sizing up."""
+    from .expectancy import analyze, conservative_kelly
+    from .storage import Store
+
+    settings = Settings()
+    if args.demo:
+        import random
+
+        rng = random.Random(args.seed)
+        from .expectancy import TradeRecord
+
+        trades = []
+        for i in range(args.demo):
+            price = 0.55
+            shares = 40.0
+            fee = 0.0
+            won = rng.random() < args.true_win_rate
+            pnl = (shares * 1.0 if won else 0.0) - price * shares - fee
+            trades.append(
+                TradeRecord(
+                    ts=float(i), slug=f"demo{i}", side="up", price=price,
+                    shares=shares, fee=fee, won=won, pnl=pnl,
+                )
+            )
+        print(
+            f"SIMULATED {args.demo} trades at a TRUE win rate of "
+            f"{args.true_win_rate:.1%} and a 55c entry.\n"
+            "The point is to watch how much evidence a real edge needs before\n"
+            "the statistics can see it.\n"
+        )
+    else:
+        store = Store(settings.db_path)
+        trades = store.trade_records()
+        store.close()
+        if not trades:
+            print("no recorded trades. Run `paper` first, or try --demo 200.")
+            return 1
+        print(f"analysing {len(trades)} recorded trades from {settings.db_path}\n")
+
+    exp = analyze(trades, strategies_tried=args.variants)
+    print(exp.pretty())
+    f = conservative_kelly(exp)
+    print()
+    print(f"conservative Kelly (quarter-Kelly on the LOWER CI bound): {f:.2%} of bankroll")
+    print(
+        f"  on a ${settings.bankroll_usd:,.0f} bankroll that is "
+        f"${f * settings.bankroll_usd:,.2f} per trade"
+    )
+    if exp.n and exp.mean_pnl > 0 and not exp.significant:
+        print(
+            "\nDo not size up on this. Positive-but-insignificant is exactly the\n"
+            "state in which people lever a coin flip."
+        )
+    return 0
+
+
 def cmd_goal(args: argparse.Namespace) -> int:
     """The arithmetic of a monthly income target."""
     from .goals import analyse_goal, simulate_outcomes  # noqa: F401
@@ -343,6 +400,13 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    e = sub.add_parser("expectancy", help="is the edge statistically real?")
+    e.add_argument("--demo", type=int, default=0, help="simulate N trades instead of using the store")
+    e.add_argument("--true-win-rate", type=float, default=0.58, dest="true_win_rate")
+    e.add_argument("--variants", type=int, default=1, help="strategy variants you tried (multiple-testing correction)")
+    e.add_argument("--seed", type=int, default=3)
+    e.set_defaults(func=cmd_expectancy)
 
     g = sub.add_parser("goal", help="what a monthly income target requires")
     g.add_argument("--capital", type=float, default=1000.0)

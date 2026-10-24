@@ -295,7 +295,11 @@ class Engine:
             else:
                 outcome = ws.index.resolved_outcome()
             avg = ws.index.realized_average(ws.market.end_ts) or 0.0
+            before = len(self.broker.closed)
             pnl = self.broker.settle_market(ws.market, outcome, ws.market.end_ts)
+            if self.store:
+                for trade in self.broker.closed[before:]:
+                    self.store.add_trade(trade)
             if self.store:
                 self.store.resolve_market(slug, outcome, avg, now)
                 self.store.add_settlement(

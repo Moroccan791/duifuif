@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from .config import Settings
 from .fees import taker_fee
 from .risk import RiskManager
+from .expectancy import TradeRecord
 from .types import Book, Fill, Market, Position, Signal
 
 
@@ -31,6 +32,7 @@ class PaperBroker:
     fees_paid: float = 0.0
     n_wins: int = 0
     n_losses: int = 0
+    closed: list[TradeRecord] = field(default_factory=list)
 
     def execute(
         self, signal: Signal, book: Book, shares: float, now: float, as_maker: bool = False
@@ -65,6 +67,7 @@ class PaperBroker:
             self.positions[signal.token_id] = existing
         existing.shares += filled
         existing.cost += notional + fee
+        existing.notional += notional
 
         fill = Fill(
             ts=now,
@@ -94,6 +97,18 @@ class PaperBroker:
             pnl = payout - pos.cost
             total += pnl
             self.realized_pnl += pnl
+            self.closed.append(
+                TradeRecord(
+                    ts=now,
+                    slug=pos.market_slug,
+                    side=pos.side,
+                    price=pos.avg_price,
+                    shares=pos.shares,
+                    fee=pos.fees,
+                    won=won,
+                    pnl=pnl,
+                )
+            )
             if won:
                 self.n_wins += 1
             else:

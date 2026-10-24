@@ -150,8 +150,19 @@ class Position:
     market_slug: str
     side: str
     shares: float = 0.0
-    cost: float = 0.0
+    cost: float = 0.0      # cash out the door: notional + fees
+    notional: float = 0.0  # price paid for shares only, fees excluded
 
     @property
     def avg_price(self) -> float:
-        return self.cost / self.shares if self.shares else 0.0
+        """Price paid per share, NOT including fees.
+
+        Keeping fees out of this matters: if they are folded in, the recorded
+        fee is zero by construction and the expectancy model prices every trade
+        as fee-free.
+        """
+        return self.notional / self.shares if self.shares else 0.0
+
+    @property
+    def fees(self) -> float:
+        return max(0.0, self.cost - self.notional)
