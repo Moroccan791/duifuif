@@ -57,6 +57,16 @@ burning readable captions and normalising loudness is deterministic work.
     python -m clipper plan  --transcript talk.srt --top 6
     python -m clipper render --video talk.mp4 --transcript talk.srt --outdir out --run
 
+Or the whole job in one command, which is the one you actually want:
+
+    python -m clipper run --campaigns campaigns.json --campaign "Brand" \
+        --video podcast.mp4 --transcript podcast.srt --outdir out --views 1200
+
+That produces finished clips, a caption per platform, and `manifest.json`
+recording which clip belongs to which campaign, which window it came from, and
+what it is expected to earn. `--run` encodes; without it you get a dry run and
+written `.ass` subtitle files so you can inspect formatting first.
+
 Three real decisions baked in:
 
 - **Reframe `pad` by default, not `crop`.** Cropping takes the centre 9:16 slice
@@ -162,15 +172,45 @@ number that is currently small. It does not create an audience.
 3. **Only then** the worker and the dashboard. Deployment is the last step, not
    the first, and it is the least valuable part of this.
 
+## What `run` adds over `render`
+
+| | `render` | `run` |
+|---|----------|-------|
+| picks a campaign | no | yes, by $/hr |
+| captions | burned in, from transcript | **also** a caption string per platform |
+| record of work | none | `manifest.json` |
+| re-run behaviour | re-encodes everything | **skips fresh clips** |
+| revenue estimate | none | per clip, at your stated views |
+
+The manifest matters more than it looks. Clipping income is lost when a finished
+clip never gets submitted, or gets submitted to the wrong campaign three weeks
+later. A clip without a record is a clip you cannot invoice.
+
+**Idempotency** is the other half: `is_fresh` treats a missing or zero-byte
+output as a failed encode, so a crashed batch resumes rather than re-encoding
+everything. Use `--force` to deliberately redo.
+
+**Upload** is a plain HTTP `PUT` to a presigned URL -- no SDK, no credentials in
+this repo. You mint the URL wherever your worker runs:
+
+    python -m clipper run ... --run --upload-url "https://<acct>.r2.cloudflarestorage.com/bucket/{name}?X-Amz-Signature=..."
+
+`upload_presigned` is written to the R2/S3 contract but **has not been executed
+against a real bucket** -- there is no egress to object storage from this
+sandbox. Test it once by hand before trusting it in a loop.
+
 ## Status of this code
 
-`clipper/campaigns.py`, `clipper/plan.py` and `clipper/render.py` are built and
-tested (56 tests). The planning and command generation are verified.
+`campaigns`, `plan`, `render`, `captions` and `job` are built and tested
+(95 tests). Verified: campaign ranking, transcript parsing, segment scoring,
+caption generation, ffmpeg argv construction, manifest round-trip, idempotency,
+and the ffmpeg-missing failure path (it reports and continues rather than
+crashing a batch).
 
 **Not verified here:** actual encoding, because ffmpeg is not installed in this
-environment. `render` is dry-run by default and needs `--run` on your machine.
-Nothing in this package has been run against live Whop, because the sandbox has
-no network access to it.
+environment. `render` and `run` are dry-run by default and need `--run` on your
+machine. `upload_presigned` has never touched a real bucket. Nothing has been
+run against live Whop, because the sandbox has no network access to it.
 
 **Deliberately not built:** posting, and scraping. Both are listed above with the
 reason. A module that pretends to post would be a module that gets your account

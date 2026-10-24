@@ -4,7 +4,11 @@ import json
 
 import pytest
 
+import os
+
 from clipper import campaigns as C
+from clipper import captions as CAP
+from clipper import job as J
 from clipper import plan as P
 from clipper import render as R
 
@@ -412,3 +416,279 @@ def test_cli_render_dry_run(tmp_path, capsys):
                "--outdir", str(tmp_path / "out")])
     assert rc == 0
     assert "dry run" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# captions
+# --------------------------------------------------------------------------
+def test_strip_filler_removes_lead_ins():
+    assert CAP.strip_filler("so this is the trick") == "This is the trick"
+    assert CAP.strip_filler("well, and then it worked") == "Then it worked"
+    assert CAP.strip_filler("you know the thing") == "The thing"
+
+
+def test_strip_filler_leaves_clean_text_alone():
+    assert CAP.strip_filler("Boring wins.") == "Boring wins."
+
+
+def test_strip_filler_terminates_on_repeated_filler():
+    assert CAP.strip_filler("and and and the point is this") == "The point is this"
+
+
+def test_strip_filler_handles_empty():
+    assert CAP.strip_filler("") == ""
+    assert CAP.strip_filler("   ") == ""
+
+
+def test_first_sentence_takes_only_the_opening():
+    assert CAP.first_sentence("One. Two. Three.") == "One."
+    assert CAP.first_sentence("No terminator here") == "No terminator here"
+
+
+def test_truncate_never_cuts_mid_word():
+    out = CAP.truncate("the quick brown fox jumps over", 15)
+    assert not out.endswith("jump")
+    assert len(out) <= 15
+    assert "brown" in out
+
+
+def test_truncate_strips_trailing_punctuation():
+    assert not CAP.truncate("hello there my friend", 13).endswith(",")
+
+
+def test_truncate_returns_short_text_unchanged():
+    assert CAP.truncate("short", 100) == "short"
+
+
+def test_keywords_drops_stopwords_and_short_words():
+    kws = CAP.keywords("investing investing money the a to investing returns", 3)
+    assert "investing" in [k.lower() for k in kws]
+    assert "the" not in [k.lower() for k in kws]
+
+
+def test_keywords_preserves_proper_noun_casing():
+    kws = CAP.keywords("Bangladesh Bangladesh growth growth growth", 2)
+    assert "Bangladesh" in kws
+
+
+def test_caption_respects_platform_limits():
+    cap = CAP.Caption(hook="word " * 80, tags=["tag"])
+    for plat in ("tiktok", "shorts", "x"):
+        assert len(cap.for_platform(plat)) <= CAP.LIMITS[plat]
+
+
+def test_caption_never_truncates_away_all_tags():
+    cap = CAP.Caption(hook="a very long hook " * 30, tags=["alpha", "beta"])
+    out = cap.for_platform("tiktok")
+    assert "#alpha" in out
+
+
+def test_caption_with_no_tags_is_just_the_hook():
+    cap = CAP.Caption(hook="Just a hook.")
+    assert cap.for_platform("tiktok") == "Just a hook."
+
+
+def test_build_puts_campaign_tags_first():
+    cap = CAP.build("The investing secret nobody tells you about dividends.", ["brand"], 3)
+    assert cap.tags[0].lower() == "brand"
+
+
+def test_build_does_not_duplicate_tags():
+    cap = CAP.build("investing investing investing returns returns", ["investing"], 3)
+    lowered = [t.lower() for t in cap.tags]
+    assert len(lowered) == len(set(lowered))
+
+
+def test_campaign_hashtags_parsed_from_dict():
+    c = C.from_dict({"name": "x", "cpm": 1.0, "hashtags": ["#Brand", "tag2"]})
+    assert c.hashtags == ("Brand", "tag2")
+
+
+def test_campaign_hashtags_default_empty():
+    assert C.from_dict({"name": "x", "cpm": 1.0}).hashtags == ()
+
+
+# --------------------------------------------------------------------------
+# job runner
+# --------------------------------------------------------------------------
+def _campaign(**kw):
+    d = {"name": "Test", "cpm": 2.0, "approval_rate": 1.0}
+    d.update(kw)
+    return C.from_dict(d)
+
+
+def test_options_hash_changes_with_settings():
+    a = J.options_hash(R.RenderOptions())
+    b = J.options_hash(R.RenderOptions(reframe="crop"))
+    assert a != b
+    assert J.options_hash(R.RenderOptions()) == a
+
+
+def test_plan_jobs_creates_one_job_per_segment(tmp_path):
+    segs = [P.Segment(0, 20, "One thing."), P.Segment(30, 50, "Two thing.")]
+    jobs = J.plan_jobs(_campaign(), segs, str(tmp_path), 1000, R.RenderOptions())
+    assert len(jobs) == 2
+    assert jobs[0].out_path.endswith("clip_01.mp4")
+    assert jobs[1].expected_usd == pytest.approx(2.0)
+
+
+def test_plan_jobs_attaches_captions(tmp_path):
+    segs = [P.Segment(0, 20, "Most people get this wrong about investing.")]
+    jobs = J.plan_jobs(_campaign(), segs, str(tmp_path), 1000, R.RenderOptions())
+    assert "Most people" in jobs[0].caption.hook
+
+
+def test_is_fresh_rejects_empty_file(tmp_path):
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"")
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(f), CAP.Caption("h"))
+    assert not J.is_fresh(job)
+
+
+def test_is_fresh_rejects_missing_file(tmp_path):
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(tmp_path / "nope.mp4"), CAP.Caption("h"))
+    assert not J.is_fresh(job)
+
+
+def test_is_fresh_accepts_real_file(tmp_path):
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x" * 2048)
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(f), CAP.Caption("h"))
+    assert J.is_fresh(job)
+
+
+def test_run_job_skips_cached_output(tmp_path):
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x" * 2048)
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(f), CAP.Caption("h"))
+    out = J.run_job(job, "v.mp4", [], R.RenderOptions(), dry_run=False)
+    assert out.skipped and not out.rendered
+
+
+def test_run_job_force_rerenders(tmp_path):
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x" * 2048)
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(f), CAP.Caption("h"))
+    out = J.run_job(job, "v.mp4", [], R.RenderOptions(), dry_run=False, force=True)
+    assert not out.skipped
+    assert out.error        # no ffmpeg in this environment
+
+
+def test_run_job_records_validation_failure(tmp_path):
+    job = J.ClipJob("c", P.Segment(0, 2, "x"), str(tmp_path / "a.mp4"), CAP.Caption("h"))
+    out = J.run_job(job, "v.mp4", [], R.RenderOptions(), dry_run=False)
+    assert out.error and "too short" in out.error
+
+
+def test_run_job_dry_run_does_not_encode(tmp_path):
+    job = J.ClipJob("c", P.Segment(0, 20, "x"), str(tmp_path / "a.mp4"), CAP.Caption("h"))
+    out = J.run_job(job, "v.mp4", [], R.RenderOptions(), dry_run=True)
+    assert not out.rendered and not out.error
+
+
+def test_run_job_writes_ass_alongside_clip(tmp_path):
+    cues = [P.Cue(0, 10, "hello there")]
+    job = J.ClipJob("c", P.Segment(0, 20, "hello there"), str(tmp_path / "a.mp4"),
+                    CAP.Caption("h"))
+    J.run_job(job, "v.mp4", cues, R.RenderOptions(), dry_run=True)
+    assert (tmp_path / "a.ass").exists()
+
+
+def test_manifest_roundtrip(tmp_path):
+    man = J.Manifest("C", "v.mp4", 300, "abc", dry_run=True)
+    man.clips = [J.ClipJob("C", P.Segment(0, 20, "x"), "a.mp4", CAP.Caption("h"),
+                           expected_usd=1.5)]
+    p = tmp_path / "manifest.json"
+    man.save(str(p))
+    loaded = J.Manifest.load(str(p))
+    assert loaded["campaign"] == "C"
+    assert loaded["clips"][0]["expected_usd"] == pytest.approx(1.5)
+
+
+def test_manifest_load_returns_none_on_garbage(tmp_path):
+    p = tmp_path / "m.json"
+    p.write_text("{not json")
+    assert J.Manifest.load(str(p)) is None
+
+
+def test_manifest_load_returns_none_when_missing(tmp_path):
+    assert J.Manifest.load(str(tmp_path / "nope.json")) is None
+
+
+def test_expected_usd_excludes_failed_clips():
+    man = J.Manifest("C", "v", 300, "h", dry_run=False)
+    ok = J.ClipJob("C", P.Segment(0, 20, "x"), "a.mp4", CAP.Caption("h"), expected_usd=2.0)
+    bad = J.ClipJob("C", P.Segment(0, 20, "x"), "b.mp4", CAP.Caption("h"), expected_usd=2.0)
+    bad.error = "boom"
+    man.clips = [ok, bad]
+    assert man.total_expected_usd == pytest.approx(2.0)
+
+
+def test_manifest_includes_all_platform_captions():
+    man = J.Manifest("C", "v", 300, "h")
+    man.clips = [J.ClipJob("C", P.Segment(0, 20, "x"), "a.mp4",
+                           CAP.Caption("hook", ["tag"]))]
+    caps = man.to_dict()["clips"][0]["caption"]
+    assert set(caps) == {"tiktok", "reels", "shorts", "x"}
+    assert all("#tag" in v for v in caps.values())
+
+
+def test_summary_reports_counts_and_failures(tmp_path):
+    man = J.Manifest("C", "v.mp4", 300, "h", dry_run=False)
+    man.clips = [J.ClipJob("C", P.Segment(0, 20, "x"), "a.mp4", CAP.Caption("h"))]
+    man.clips[0].error = "ffmpeg not found on PATH"
+    text = J.summary(man)
+    assert "failed 1" in text
+    assert "ffmpeg not found" in text
+
+
+def test_upload_presigned_rejects_missing_file():
+    with pytest.raises(FileNotFoundError):
+        J.upload_presigned("https://example.invalid/x", "/definitely/not/here.mp4")
+
+
+def test_copy_local_places_file(tmp_path):
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"abc")
+    dest = J.copy_local(str(src), str(tmp_path / "pub"))
+    assert os.path.exists(dest)
+    assert open(dest, "rb").read() == b"abc"
+
+
+def test_cli_run_dry_by_default(tmp_path, capsys):
+    from clipper.cli import main
+    camps = tmp_path / "c.json"
+    camps.write_text(json.dumps([{"name": "Bonus Heavy", "cpm": 1.2, "bonus": 8.0,
+                                  "approvalRate": 0.9}]))
+    tr = tmp_path / "t.srt"
+    tr.write_text(SRT)
+    rc = main(["run", "--campaigns", str(camps), "--video", "v.mp4",
+               "--transcript", str(tr), "--outdir", str(tmp_path / "out"),
+               "--views", "300", "--min-seconds", "2"])
+    assert rc == 0
+    assert "dry run" in capsys.readouterr().out
+
+
+def test_cli_run_rejects_unknown_campaign(tmp_path, capsys):
+    from clipper.cli import main
+    camps = tmp_path / "c.json"
+    camps.write_text(json.dumps([{"name": "Real", "cpm": 1.0}]))
+    tr = tmp_path / "t.srt"
+    tr.write_text(SRT)
+    rc = main(["run", "--campaigns", str(camps), "--campaign", "Nope",
+               "--video", "v.mp4", "--transcript", str(tr),
+               "--outdir", str(tmp_path / "o"), "--views", "300"])
+    assert rc == 2
+    assert "no campaign matching" in capsys.readouterr().out
+
+
+def test_cli_run_warns_when_below_floor(tmp_path, capsys):
+    from clipper.cli import main
+    camps = tmp_path / "c.json"
+    camps.write_text(json.dumps([{"name": "Tiny", "cpm": 0.01}]))
+    tr = tmp_path / "t.srt"
+    tr.write_text(SRT)
+    main(["run", "--campaigns", str(camps), "--video", "v.mp4", "--transcript", str(tr),
+          "--outdir", str(tmp_path / "o"), "--views", "100", "--min-seconds", "2",
+          "--floor", "50"])
+    assert "below your" in capsys.readouterr().out

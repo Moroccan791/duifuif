@@ -94,6 +94,49 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Campaign + video + transcript -> postable clips and a manifest."""
+    from . import job as J
+
+    raw = json.load(open(args.campaigns))
+    if isinstance(raw, dict):
+        raw = raw.get("items", raw.get("campaigns", []))
+    cands = [C.from_dict(d) for d in raw]
+    if not cands:
+        print("no campaigns in that file")
+        return 2
+
+    if args.campaign:
+        match = [c for c in cands if args.campaign.lower() in c.name.lower()]
+        if not match:
+            print(f"no campaign matching {args.campaign!r}. "
+                  f"Options: {', '.join(c.name for c in cands)}")
+            return 2
+        chosen = match[0]
+    else:
+        chosen = C.rank(cands, args.views, args.minutes, args.floor)[0]
+
+    hourly = chosen.dollars_per_hour(args.views, args.minutes)
+    print(f"campaign: {chosen.name}  ${chosen.cpm:.2f}/1k  ->  ${hourly:.2f}/hr "
+          f"at {args.views:,.0f} views/clip")
+    if hourly < args.floor:
+        print(f"  ! below your ${args.floor:.0f}/hr floor -- this campaign is not "
+              f"worth the hours, but rendering anyway so you can judge the output")
+    print()
+
+    opts = R.RenderOptions(reframe=args.reframe, captions=not args.no_captions,
+                           crf=args.crf, preset=args.preset)
+    man = J.run(chosen, args.video, args.transcript, args.outdir, args.views,
+                top=args.top, min_seconds=args.min_seconds, max_seconds=args.max_seconds,
+                opts=opts, dry_run=not args.run, force=args.force,
+                upload_url=args.upload_url)
+    print(J.summary(man))
+    if not args.run:
+        print("\n(dry run -- pass --run to encode)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="clipper", description="Whop clipping pipeline")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -132,6 +175,27 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--top", type=int, default=6)
     r.add_argument("--min-gap", type=float, default=30.0, dest="min_gap")
     r.set_defaults(func=cmd_render)
+    rn = sub.add_parser("run", help="one campaign, one video -> postable clips + manifest")
+    rn.add_argument("--campaigns", required=True, help="JSON of campaigns")
+    rn.add_argument("--campaign", default=None, help="name substring; default = best by $/hr")
+    rn.add_argument("--video", required=True)
+    rn.add_argument("--transcript", required=True)
+    rn.add_argument("--outdir", required=True)
+    rn.add_argument("--views", type=float, required=True, help="YOUR real views per clip")
+    rn.add_argument("--minutes", type=float, default=C.DEFAULT_MINUTES_PER_CLIP)
+    rn.add_argument("--floor", type=float, default=8.0)
+    rn.add_argument("--reframe", choices=["pad", "crop"], default="pad")
+    rn.add_argument("--no-captions", action="store_true", dest="no_captions")
+    rn.add_argument("--crf", type=int, default=20)
+    rn.add_argument("--preset", default="medium")
+    rn.add_argument("--top", type=int, default=6)
+    rn.add_argument("--min-seconds", type=float, default=18.0, dest="min_seconds")
+    rn.add_argument("--max-seconds", type=float, default=48.0, dest="max_seconds")
+    rn.add_argument("--upload-url", default=None, dest="upload_url",
+                    help="presigned PUT template, e.g. https://r2.example/{name}")
+    rn.add_argument("--force", action="store_true", help="re-render cached clips")
+    rn.add_argument("--run", action="store_true", help="actually call ffmpeg")
+    rn.set_defaults(func=cmd_run)
     return p
 
 

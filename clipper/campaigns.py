@@ -38,6 +38,7 @@ class Campaign:
     approval_rate: float = 0.7      # share of submissions a brand accepts
     platforms: tuple[str, ...] = ()
     bonus: float = 0.0              # flat per-approved-submission bonus
+    hashtags: tuple[str, ...] = ()  # tags the campaign requires or rewards
     ends_in_days: float | None = None
 
     def revenue_per_clip(self, views: float) -> float:
@@ -136,6 +137,10 @@ def from_dict(d: dict) -> Campaign:
         creators=int(num("creators", "creatorCount", "clippers")),
         approval_rate=num("approvalRate", "approval_rate", default=0.7) or 0.7,
         platforms=tuple(plats),
+        hashtags=tuple(
+            str(t).strip().lstrip("#") for t in
+            (d.get("hashtags") or d.get("requiredHashtags") or d.get("tags") or ())
+            if str(t).strip().lstrip("#")),
         bonus=num("bonus", "flatBonus"),
         ends_in_days=(num("endsInDays") or None),
     )
