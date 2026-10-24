@@ -328,3 +328,33 @@ therefore usually noise.
 
 So the honest state of the entire band question: **no band pays after fees.**
 50-65c loses 3.71%, 65-80c loses 1.50%, 35-50c loses 6.19%, 80-100c loses 4.61%.
+
+---
+
+# The fee was never the problem
+
+I assumed Polymarket charged a taker fee of `0.07 * p * (1 - p)` per share. That
+came from politics markets. Checking a live sports market on gamma:
+
+    "feesEnabled": false, "feeType": null, "rewardsMinSize": 0, "rewardsMaxSpread": 0
+
+**Sports game markets charge no fee and pay no liquidity rewards.** So the fee
+assumption behind every "after fee" number above was wrong. Here is the same
+table with the fee set to zero:
+
+| band | n | avg price | hit | ROI at zero fee | ROI at 0.07 fee |
+|------|---|-----------|-----|-----------------|-----------------|
+| 35-50c | 4,689 | 42.07c | 41.05% | -2.41% | -6.19% |
+| 50-65c | 2,986 | 57.04c | 56.56% | **-0.84%** | -3.71% |
+| 65-80c | 1,584 | 71.39c | 71.72% | +0.46% | -1.50% |
+| 80-100c | 459 | 84.51c | 81.48% | -3.59% | -4.61% |
+
+This makes the conclusion **stronger**, not weaker. The 50-65c band loses 0.84%
+before you pay anything at all. The prices are not gouging you -- they are simply
+correct. The market is efficient here, and no fee change, rebate or reward tier
+fixes that.
+
+It also closes off an idea worth having: if sports markets charged a fat taker
+fee, the move would be to stop paying it and start collecting it by quoting
+instead. With `feesEnabled: false` and `rewardsMinSize: 0`, there is no toll to
+collect in sports. The tick is efficient and unpaid.

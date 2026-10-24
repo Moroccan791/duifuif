@@ -6,9 +6,11 @@ you need to win more than ``p`` of the time. Fees push that up.
 
     breakeven(p) = p + fee
 
-Polymarket's sports fee is charged on notional at roughly ``0.07 * p * (1 - p)``
-per share, which peaks near 50c and is small at the extremes. At 58.5c that is
-about 1.7c, so a 58.5c leg needs a 60.2% win rate to break even.
+Sports markets currently charge **no fee** (verified on gamma: ``feesEnabled:
+false``), so in this package ``FEE_COEF`` defaults to zero and the breakeven is
+simply the price. Where a fee does apply, it is charged on notional at roughly
+``rate * p * (1 - p)`` per share; at 58.5c with a 0.07 coefficient that is about
+1.7c, so the leg would need a 60.2% win rate.
 
 This is why an "accurate" model is not the same as a profitable one. A model
 that is right 57.7% of the time on 58.5c legs loses money. The band test in
@@ -23,8 +25,13 @@ from dataclasses import dataclass
 BAND_LO = 0.50
 BAND_HI = 0.65
 
-# Polymarket taker fee coefficient on notional (see FINDINGS for the source).
-FEE_COEF = 0.07
+# Polymarket's fee depends on the market. Verified on gamma (2026-10):
+#   sports game markets -> "feesEnabled": false, "feeType": null  => ZERO fee
+#   politics markets    -> feeType "politics_fees", rate 0.04, takerOnly
+# So the correct default for anything in this package is zero. The politics
+# coefficient is kept for comparison and for anyone pricing a non-sports market.
+FEE_COEF = 0.0
+FEE_COEF_POLITICS = 0.07
 
 
 def fee_per_share(price: float, coef: float = FEE_COEF) -> float:

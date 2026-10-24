@@ -11,30 +11,47 @@ from sports import band, live, tennis
 # --------------------------------------------------------------------------
 # band arithmetic -- these are the numbers that decide real money
 # --------------------------------------------------------------------------
-def test_breakeven_always_above_price():
+def test_breakeven_is_never_below_price():
+    """With a fee it exceeds the price; with no fee (sports) it equals it."""
     for c in range(1, 100):
         p = c / 100
-        assert band.breakeven(p) > p
+        assert band.breakeven(p) >= p
+        assert band.breakeven(p, band.FEE_COEF_POLITICS) > p
 
 
-def test_breakeven_at_band_edges():
-    # 58.5c leg needs ~60.2% to break even after fee
-    assert band.breakeven(0.585) == pytest.approx(0.602, abs=0.002)
-    assert band.breakeven(0.50) == pytest.approx(0.5175, abs=0.002)
-    assert band.breakeven(0.65) == pytest.approx(0.6659, abs=0.002)
+def test_sports_breakeven_is_just_the_price():
+    """Sports markets are fee-free, so breakeven == price. Verified on gamma."""
+    assert band.FEE_COEF == 0.0
+    for c in (0.50, 0.585, 0.65):
+        assert band.breakeven(c) == pytest.approx(c, abs=1e-12)
+
+
+def test_breakeven_with_a_politics_style_fee():
+    # if a fee of 0.07 did apply, 58.5c would need ~60.2%
+    assert band.breakeven(0.585, band.FEE_COEF_POLITICS) == pytest.approx(0.602, abs=0.002)
+    assert band.breakeven(0.50, band.FEE_COEF_POLITICS) == pytest.approx(0.5175, abs=0.002)
+    assert band.breakeven(0.65, band.FEE_COEF_POLITICS) == pytest.approx(0.6659, abs=0.002)
 
 
 def test_a_58_percent_model_loses_at_band_prices():
-    """The central economic fact: being right 58% of the time is not enough."""
+    """The central economic fact: being right 58% of the time is not enough.
+
+    Note this holds with NO fee at all -- the price is simply the truth.
+    """
     p = 0.585
     assert band.ev_per_dollar(0.58, p) < 0
     assert band.ev_per_dollar(0.62, p) > 0
+    # and it is worse once a fee applies
+    assert band.ev_per_dollar(0.62, p, band.FEE_COEF_POLITICS) < band.ev_per_dollar(0.62, p)
 
 
 def test_fee_is_zero_at_the_extremes():
-    assert band.fee_per_share(0.0) == pytest.approx(0.0)
-    assert band.fee_per_share(1.0) == pytest.approx(0.0)
-    assert band.fee_per_share(0.5) == pytest.approx(0.0175)
+    f = band.FEE_COEF_POLITICS
+    assert band.fee_per_share(0.0, f) == pytest.approx(0.0)
+    assert band.fee_per_share(1.0, f) == pytest.approx(0.0)
+    assert band.fee_per_share(0.5, f) == pytest.approx(0.0175)
+    # sports charges nothing anywhere
+    assert band.fee_per_share(0.5) == pytest.approx(0.0)
 
 
 def test_ev_and_kelly_agree_on_sign():
@@ -291,6 +308,6 @@ def test_ratings_roundtrip(tmp_path):
 def test_band_arithmetic_table_is_monotone_in_price():
     rows = band.band_arithmetic()
     assert rows[0][0] == pytest.approx(0.50)
-    assert all(b > p for p, b, _ in rows)
+    assert all(b >= p for p, b, _ in rows)
     # payout per dollar falls as price rises
     assert rows[0][2] > rows[-1][2]
