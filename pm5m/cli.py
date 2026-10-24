@@ -36,6 +36,54 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Simulate the stated plan: start at $X, make a fixed amount per day."""
+    from .plan_sim import (PlanConfig, bankroll_for_daily, daily_distribution,
+                           daily_ev, pretty, simulate)
+
+    start, target = args.start, args.target
+    print("=" * 78)
+    print(f"THE PLAN: start with ${start:.0f}, make ${target:.0f}/day")
+    print("=" * 78)
+    print(f"That is {target/start*100:.1f}% per day, or "
+          f"{((1+target/start)**30-1)*100:,.0f}% per month compounded.")
+    print()
+
+    print("WHAT A DAY ACTUALLY LOOKS LIKE (40 trades, taker at 55c)")
+    print(f"{'edge':>6} {'stake':>7} {'mean':>8} {'sd':>7} {'p5':>8} {'median':>8} "
+          f"{'p95':>8} {'P(lose)':>8}")
+    print("-" * 76)
+    for e in (0.01, 0.02, 0.03, 0.05):
+        d = daily_distribution(start, e)
+        print(f"{e*100:5.0f}pp {d['stake']:7.2f} {d['mean']:8.2f} {d['sd']:7.2f} "
+              f"{d['p05']:8.2f} {d['p50']:8.2f} {d['p95']:8.2f} {d['p_loss_day']:8.1%}")
+    print()
+    print("  A 'fixed' daily amount is not something a probabilistic edge can")
+    print("  produce. Even at a large edge, roughly a third of days are losses.")
+    print()
+
+    print(f"WHAT BANKROLL ${target:.0f}/DAY ACTUALLY REQUIRES")
+    print(f"{'edge':>6} {'taker':>14} {'maker':>14}")
+    print("-" * 40)
+    for e in (0.01, 0.02, 0.03, 0.05):
+        t = bankroll_for_daily(target, e, maker=False)
+        m = bankroll_for_daily(target, e, maker=True)
+        ts = f"${t:,.0f}" if t < 1e12 else "impossible"
+        ms = f"${m:,.0f}" if m < 1e12 else "impossible"
+        print(f"{e*100:5.0f}pp {ts:>14} {ms:>14}")
+    print()
+    print("  At 55c a taker pays 1.73c/share, so any edge under ~1.8pp is")
+    print("  negative after fees. 'maker' means quoting inside the spread.")
+    print()
+
+    cfg = PlanConfig(start=start, daily_target=target, price=0.55,
+                     edge=args.edge, trades_per_day=args.trades,
+                     days=args.days, maker=args.maker, seed=7)
+    print("MONTE CARLO OF THE FULL PLAN")
+    print(pretty(cfg, paths=args.paths))
+    return 0
+
+
 def cmd_phase2(args: argparse.Namespace) -> int:
     """Phase 2: validate the settlement model, then look for edge vs the book."""
     from .history import Cache, Window, attach_spot, fetch_binance_1s, fetch_gamma_windows, synthetic_windows
@@ -672,6 +720,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    pl = sub.add_parser("plan", help="simulate start-with-$X make-$Y-per-day")
+    pl.add_argument("--start", type=float, default=90.0)
+    pl.add_argument("--target", type=float, default=15.0, help="dollars per day")
+    pl.add_argument("--edge", type=float, default=0.03, help="assumed edge, e.g. 0.03")
+    pl.add_argument("--trades", type=int, default=40, help="trades per day")
+    pl.add_argument("--days", type=int, default=90)
+    pl.add_argument("--paths", type=int, default=2000)
+    pl.add_argument("--maker", action="store_true", help="zero fees (quote inside the spread)")
+    pl.set_defaults(func=cmd_plan)
 
     p2 = sub.add_parser("phase2", help="validate the settlement model and test for edge")
     p2.add_argument("--fixture", action="store_true", help="use synthetic windows, no network")

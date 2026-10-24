@@ -18,6 +18,74 @@ That third row is the one I got wrong by never checking. Here it is.
 
 ---
 
+## 1.5 Your plan: $80–100 in, $10–20/day out — measured
+
+This is a testable claim, so I tested it (`python -m pm5m plan`).
+
+**$15/day on $90 is 16.7% per day — 10,095% per month compounded.** That is not
+a target, it is a different universe. The best long-run record of any fund ever
+is Medallion at ~66% *per year*.
+
+### What a day actually looks like
+
+$90 bankroll, 40 trades/day, taker at 55¢:
+
+| edge | stake/trade | mean day | sd | p5 | median | p95 | **P(losing day)** |
+|---|---|---|---|---|---|---|---|
+| 1pp | $0.00 | $0.00 | — | — | — | — | 100% (no trades) |
+| 2pp | $0.14 | $0.02 | $0.79 | −$1.19 | $0.08 | $1.34 | **46%** |
+| 3pp | $0.66 | $0.58 | $3.72 | −$5.62 | $0.37 | $6.36 | **41%** |
+| 5pp | $1.70 | $3.98 | $9.53 | −$11.41 | $4.04 | $19.48 | **32%** |
+
+Read the last row. Even assuming a **5pp edge** — far larger than anything the
+research supports — you would still lose money on **one day in three**, and 43%
+of days would make under $5.
+
+**A "fixed" daily amount is not something a probabilistic edge can produce.** You
+don't get $15 every day. You get −$11 some days, +$4 on a typical day, +$19 on a
+good one, and you hope the mean is positive. Anyone who tells you otherwise is
+either selling something or has not been through a losing week.
+
+### What $15/day actually needs
+
+| real edge | as a taker | as a maker (no fee) |
+|---|---|---|
+| 1pp | impossible | **$3,712** |
+| 2pp | $51,456 | **$928** |
+| 3pp | $2,292 | **$412** |
+| 5pp | $345 | **$148** |
+
+Two things fall out:
+
+1. **Fees decide everything at small size.** At 55¢ a taker pays 1.73¢/share, so
+   any edge below ~1.8pp is *negative after fees*. Quoting as a maker (zero fee)
+   is not a preference here, it is the only way small capital survives.
+2. **Capital is the binding constraint, not the model.** A realistic 1–2pp maker
+   edge needs **$900–$3,700** to make $15/day.
+
+### The honest conclusion about $90
+
+At $90, a genuinely optimistic 3pp taker edge produces **$0.58/day** and a median
+bankroll of **$153 after 90 days** — with a 16% chance of clearing $150 profit
+and a 41% chance that any given day is a loser.
+
+That is the true shape of it: not a daily wage, but a slow, noisy grind that
+works if the edge is real and the fees are zero.
+
+**So the plan should change in one of two ways:**
+
+- **Keep $90 → change the goal.** The goal becomes "prove the edge without
+  losing the stake", not $10/day. Treat it as tuition. If you clear $150 of
+  profit in 90 days, that is a *good* outcome, not a disappointing one.
+- **Keep the $10–20/day goal → change the capital.** You need $400–$900 minimum,
+  as a maker, at an edge nobody has yet demonstrated. That is the honest price of
+  the target.
+
+What I will not do is tell you the $90 plan works. `pm5m plan` will re-run this
+for any numbers you want to try.
+
+---
+
 ## 2. The number that decides everything
 
 Every BTC 5-minute market on **2026-06-15**, measured from the archive:
