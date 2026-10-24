@@ -1,0 +1,24 @@
+[project]
+name = "pm5m"
+version = "0.1.0"
+description = "Research + execution framework for Polymarket 5-minute crypto Up/Down markets"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+live = ["py-clob-client>=0.34"]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pm5m*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
