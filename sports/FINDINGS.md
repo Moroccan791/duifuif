@@ -88,6 +88,49 @@ Caveat: this is measured against Pinnacle, the sharpest book in the market. A
 softer book, or a venue with retail flow, will show more of it. Whether
 Polymarket shows it is a separate measurement, and it is the one that matters.
 
+## Result 5: adding data narrows the gap without closing it
+
+The obvious objection is that the model had too little information in it. So:
+four features instead of one — Elo, points from the last five matches, goal
+difference over the last five, and days of rest.
+
+| | accuracy | log loss |
+|---|---|---|
+| plain Elo | 52.58% | 1.0010 |
+| Elo + form + goal diff + rest | 52.64% | 0.9910 |
+| the closing line | **53.73%** | **0.9706** |
+
+It helps — 0.010 nats — and it is still 0.020 nats behind the market. That
+distance is what the bookmakers' own player-level information is worth, and they
+had already priced it before the ball was kicked.
+
+This is the wrong frame for the problem. A closing line is not a prediction made
+from results; it is the settlement price after every well-informed bettor has
+pushed money into it. Player data does not beat that price, because the price
+already contains the player data. Beating it requires information the market
+does not have yet — not more of the information it already has.
+
+## Where this test does NOT generalise
+
+The result is strong and its scope is narrow, and it is worth being precise
+about which is which. What was tested: **three-way football moneylines, against
+Pinnacle, at the close.** That is the hardest version of the problem — the
+sharpest book, the most efficient market, the most-covered sport.
+
+It says nothing about:
+
+* **Binary markets.** Polymarket lists yes/no, not 1X2. Fewer outcomes is a
+  structurally easier problem, and the crowd pricing a two-sided market is not
+  the same crowd that prices a three-way one.
+* **Fixtures the sharp books barely cover.** Lower leagues and niche sports are
+  priced by retail flow rather than by professionals, and the favourite-longshot
+  table above suggests where that goes wrong.
+* **In-play.** A venue lagging the broadcast is a speed edge. Nothing in this
+  document tests latency, because nothing here runs in real time.
+
+Those three are where a sports bot could plausibly pay, and none of them are
+excluded by anything measured here.
+
 ## So what would actually work
 
 Not a predictor. Three things, in descending order of how much I believe them:
