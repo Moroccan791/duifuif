@@ -230,16 +230,22 @@ idea. Every phase below can end the project, and that is a feature.
 
 ### Phase 1 — Get real data, no waiting (1 day)
 
-We do **not** need to record for weeks. A public dataset exists:
+We do **not** need to record for weeks. Multiple public datasets exist, and I
+verified one of them by downloading and parsing it — see `DATA.md`.
 
-> `mileswangs/polymarket-btc-updown-5m-orderbook-tick-data` — every L2 update,
-> trade and on-chain fill for **all 288 BTC 5m markets on 2026-10-01**, plus the
-> Chainlink stream and 60s TWAP they resolve on.
+> `mileswangs/polymarket-historical-data` — **4,032 BTC 5m markets,
+> 2026-08-08 → 08-21**, full L2 book, trades, on-chain fills, and the Chainlink
+> 60s TWAP that decides each market.
+>
+> `marketlenstrade/polymarket-historical-data` — 52,289 BTC 5m markets in the
+> archive index (Feb–Sep 2026); one full day (288 markets, 111 MB) ships in the
+> public repo and I parsed it successfully.
 
-Get that, plus as many days as are available. This turns "record for a month"
-into "analyse tonight", and it is the single biggest accelerant available.
+**Critical constraint discovered:** the only regime that matters started
+**2026-08-14** (60s TWAP). That is ~71 days = ~20,450 windows of usable history.
+The mileswangs set straddles the 30s→60s switch on 14 Aug and must be split.
 
-* **Kill criterion:** if the dataset's outcomes cannot be reproduced from its own
+* **Kill criterion:** if outcomes cannot be reproduced from the dataset's own
   TWAP columns to >99%, trust nothing else in it — find another source.
 
 ### Phase 2 — Test H1 (2–3 days) ← **the decisive test**
@@ -309,10 +315,18 @@ calibration curve and not a hunch.
 
 ### Capacity, honestly
 
-Per-market notional is roughly **$2k**. Even capturing a large share of the
-available edge on every one of 288 windows caps this at hundreds of dollars a
-day, not thousands — and that assumes you are the fastest and best-informed
-participant on the venue, which you will not be at the start.
+Measured directly from the archive (`DATA.md` §1): **median $43 volume per
+5-minute market**, depth at the touch of $40–250. That is a far tighter ceiling
+than the ~$2k figure I quoted earlier, which came from a secondary source.
+
+Even at a generous 10× and a large share of the available edge, this is a
+**tens-of-dollars-per-window** business, not a thousands-per-day one. There is an
+unresolved three-orders-of-magnitude discrepancy between this archive and the
+reported series volume that must be settled before any capacity claim — mine
+included — is worth anything.
+
+A 5-minute market is a **high-frequency, low-capacity** game. It accumulates
+statistical evidence quickly and money slowly.
 
 A 5-minute market is a **high-frequency, low-capacity** game. It accumulates
 statistical evidence quickly and money slowly.
