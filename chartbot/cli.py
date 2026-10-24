@@ -1,0 +1,366 @@
+"""Command line for the chart bot.
+
+    python -m chartbot scan            read the chart once and print the readout
+    python -m chartbot backtest        replay history through the same code
+    python -m chartbot run             the live loop (paper by default)
+    python -m chartbot serve           dashboard with the chart the bot sees
+    python -m chartbot webhook         receive TradingView alerts
+
+Nothing trades real money unless `--live` is passed together with
+`--i-understand-this-can-lose-money`, and even then it refuses without API keys.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from .broker import BinanceBroker, BrokerError, PaperBroker
+from .data import BinanceClient, Candle, synthetic_candles, trending_candles
+from .reader import read_chart
+from .render import render_svg
+from .runner import Runner, RunnerConfig, backtest
+from .signals import SignalConfig, evaluate
+
+
+def _candles(args) -> list[Candle]:
+    if args.synthetic:
+        return trending_candles(n=args.lookback, up=args.up, seed=args.seed)
+    client = BinanceClient()
+    return client.klines(args.symbol, args.interval, args.lookback)
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    candles = _candles(args)
+    read = read_chart(candles)
+    sig = evaluate(read, args.equity, _signal_cfg(args))
+    print(f"{args.symbol} {args.interval}   last {read.price:,.2f}   ({len(candles)} candles)")
+    print()
+    print("WHAT THE CHART SAYS")
+    print("  " + read.narrate())
+    print()
+    print("NUMBERS")
+    print(f"  trend            {read.trend:>5}  strength {read.trend_strength:+.2f}")
+    print(f"  structure        {read.structure:>5} highs / lows")
+    print(f"  momentum         RSI {read.momentum:.1f} ({read.momentum_dir})")
+    print(f"  range position   {read.range_pos:.2f}  (0 = low, 1 = high)")
+    print(f"  resistance       {read.resistance:,.2f}  ({read.distance_to_resistance*100:+.2f}%)")
+    print(f"  support          {read.support:,.2f}  ({read.distance_to_support*100:+.2f}%)")
+    print(f"  volatility       ATR {read.vol_pct*100:.3f}% of price")
+    print(f"  volume           {read.rel_volume:.2f}x baseline")
+    print(f"  ema12 / ema26    {read.ema_fast:,.2f} / {read.ema_slow:,.2f}")
+    if read.patterns:
+        print(f"  patterns         {', '.join(read.patterns)}")
+    print()
+    print("DECISION")
+    print("  " + sig.describe())
+    if args.svg:
+        open(args.svg, "w").write(render_svg(candles, read, sig,
+                                             title=f"{args.symbol} {args.interval}"))
+        print(f"\n  chart written to {args.svg}")
+    return 0
+
+
+def _signal_cfg(args) -> SignalConfig:
+    return SignalConfig(mode=getattr(args, "mode", "trend"),
+                        risk_pct=getattr(args, "risk", 0.02),
+                        allow_short=not getattr(args, "no_short", False))
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    if args.synthetic:
+        # A random walk, not a monotonic trend: a monotonic trend pegs RSI above
+        # 75 forever and the strategy correctly refuses every entry, which looks
+        # like a broken bot instead of a working filter.
+        candles = synthetic_candles(n=args.bars, interval_s=300.0, seed=args.seed,
+                                    vol=0.004)
+    else:
+        client = BinanceClient()
+        candles = client.klines(args.symbol, args.interval, args.bars)
+
+    cfg = RunnerConfig(symbol=args.symbol, interval=args.interval,
+                       signal=_signal_cfg(args))
+    res = backtest(candles, start_equity=args.equity, cfg=cfg)
+    print("=" * 70)
+    print(f"BACKTEST  {args.symbol} {args.interval}  {len(candles)} bars")
+    print("=" * 70)
+    print(f"  start            ${res['start']:,.2f}")
+    print(f"  final            ${res['final']:,.2f}")
+    print(f"  return           {res['return_pct']:+.2f}%")
+    print(f"  trades           {res['trades']}  ({res['wins']}W / {res['losses']}L)")
+    print(f"  win rate         {res['win_rate']*100:.1f}%")
+    print(f"  max drawdown     {res['max_drawdown_pct']:.2f}%")
+    print(f"  decision points  {res['steps']}")
+    print()
+    if res["trades"] < 10:
+        print("  Only a handful of trades. That number is noise, not a result.")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    if args.live:
+        if not args.i_understand_this_can_lose_money:
+            print("refusing: --live needs --i-understand-this-can-lose-money")
+            return 2
+        broker = BinanceBroker(args.equity, symbol=args.symbol,
+                               testnet=args.testnet, allow_live=True)
+        print(f"LIVE on {'TESTNET' if args.testnet else 'REAL MONEY'} - {args.symbol}")
+    else:
+        broker = PaperBroker(args.equity)
+        print(f"PAPER - ${args.equity:,.2f} notional, nothing is sent anywhere")
+
+    cfg = RunnerConfig(symbol=args.symbol, interval=args.interval,
+                       lookback=args.lookback, signal=_signal_cfg(args))
+    runner = Runner(broker, cfg)
+
+    if args.synthetic:
+        from .data import live_replay
+        feed = live_replay()
+        fetcher = lambda: feed(args.lookback)
+    else:
+        client = BinanceClient()
+        fetcher = lambda: client.klines(args.symbol, args.interval, args.lookback)
+
+    print(f"every {args.every}s. Ctrl-C to stop.\n")
+    n = 0
+    try:
+        while n < args.steps:
+            try:
+                candles = fetcher()
+            except Exception as e:  # noqa: BLE001 - a dropped poll must not kill the loop
+                print(f"  data error: {e}")
+                time.sleep(args.every)
+                continue
+            step = runner.step(candles)
+            n += 1
+            eq = broker.equity(candles[-1].close)
+            line = f"[{n:>4}] {time.strftime('%H:%M:%S')} {candles[-1].close:>10,.2f}  {step.read.compact()}"
+            if step.note:
+                line += f"  {step.note}"
+            if step.action:
+                line += f"  >> {step.action}"
+            print(line)
+            if broker.halted():
+                print(f"  HALTED: {broker.halted()}")
+                break
+            if n < args.steps:
+                time.sleep(args.every)
+    except KeyboardInterrupt:
+        print("\nstopped")
+
+    print(f"\nequity ${broker.equity():,.2f}  realised ${broker.realised:+,.2f}  "
+          f"fills {len(broker.fills)}")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    state: dict = {"svg": "", "status": "starting", "log": []}
+
+    def poll() -> None:
+        cfg = SignalConfig(mode=args.mode, risk_pct=args.risk)
+        broker = PaperBroker(args.equity)
+        runner = Runner(broker, RunnerConfig(symbol=args.symbol,
+                                             interval=args.interval,
+                                             signal=cfg))
+        client = BinanceClient()
+        offline = args.synthetic
+        feed_note = "offline data (--synthetic)" if offline else ""
+        while True:
+            try:
+                if offline:
+                    candles = synthetic_candles(n=args.lookback,
+                                                seed=int(time.time()) // 5 % 997)
+                else:
+                    candles = client.klines(args.symbol, args.interval, args.lookback)
+                step = runner.step(candles)
+                state["svg"] = render_svg(
+                    candles, step.read, step.signal,
+                    title=f"{args.symbol} {args.interval}  {time.strftime('%H:%M:%S')}")
+                eq = broker.equity(candles[-1].close)
+                note = f"  [{feed_note}]" if feed_note else ""
+                state["status"] = (f"${eq:,.2f} equity | {step.signal.describe()}{note}")
+                if step.action:
+                    state["log"].insert(0, f"{time.strftime('%H:%M:%S')} {step.action}")
+                    state["log"] = state["log"][:12]
+            except Exception as e:  # noqa: BLE001
+                # Keep the page alive and say why, rather than serving a blank box.
+                if not offline:
+                    feed_note = f"live feed unavailable ({type(e).__name__}), showing offline data"
+                    offline = True
+                else:
+                    state["status"] = f"error: {e}"
+            time.sleep(args.every)
+
+    threading.Thread(target=poll, daemon=True).start()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            if self.path.startswith("/chart.svg"):
+                body = state["svg"].encode()
+                ctype = "image/svg+xml"
+            elif self.path.startswith("/api"):
+                body = json.dumps({"status": state["status"],
+                                   "log": state["log"]}).encode()
+                ctype = "application/json"
+            else:
+                body = _PAGE.replace("{{STATUS}}", state["status"]).encode()
+                ctype = "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"dashboard on http://{args.host}:{args.port}  ({args.symbol} {args.interval})")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<title>chartbot</title><style>
+body{background:#0b0d10;color:#c8d0dc;font:13px ui-monospace,monospace;margin:0;padding:18px}
+h1{font-size:15px;font-weight:600;margin:0 0 10px}
+img{width:100%;max-width:900px;border:1px solid #262b33;border-radius:6px}
+.s{margin:12px 0;color:#9aa6b6}
+</style></head><body>
+<h1>chartbot &mdash; what the machine sees</h1>
+<img id="c" src="/chart.svg">
+<div class="s">{{STATUS}}</div>
+<script>
+setInterval(()=>{document.getElementById('c').src='/chart.svg?t='+Date.now()},5000);
+setInterval(()=>{fetch('/api').then(r=>r.json()).then(d=>{
+  document.querySelector('.s').textContent=d.status;})},5000);
+</script></body></html>"""
+
+
+def cmd_webhook(args: argparse.Namespace) -> int:
+    """Receive TradingView alerts and forward them to the broker.
+
+    Set the TradingView alert webhook URL to http://<your-host>:<port>/tv, and put
+    the shared secret in the alert message body as {"secret": "...", "action": "buy"}.
+    TradingView cannot reach localhost, so this needs a public address (a tunnel is
+    fine).
+    """
+    print(f"webhook listening on http://{args.host}:{args.port}/tv")
+    print("  (TradingView cannot reach localhost -- use a tunnel or a VPS)")
+    print("  paper mode: alerts are logged, no orders are placed" if not args.live
+          else "  LIVE: alerts will place orders")
+
+    broker = PaperBroker(args.equity)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode(errors="replace")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {"action": raw.strip().lower()}
+            if args.secret and payload.get("secret") != args.secret:
+                self.send_response(403)
+                self.end_headers()
+                return
+            action = str(payload.get("action", "")).lower()
+            price = float(payload.get("price") or 0.0)
+            print(f"  alert: {action} @ {price}")
+
+            stop = target = 0.0
+            if args.live and action in ("buy", "sell") and price > 0:
+                stop = price * (1 - args.stop_pct) if action == "buy" else price * (1 + args.stop_pct)
+                target = price * (1 + args.stop_pct * 2) if action == "buy" else price * (1 - args.stop_pct * 2)
+                try:
+                    qty = (broker.equity() * args.risk) / max(1e-9, abs(price - stop))
+                    broker.open_position(action, qty, price, stop, target,
+                                         reason="tradingview alert")
+                    print(f"    -> opened {action} {qty:.6f}")
+                except BrokerError as e:
+                    print(f"    -> blocked: {e}")
+
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="chartbot", description="a bot that reads charts and trades")
+    sub = p.add_subparsers(dest="cmd")
+
+    def common(sp):
+        sp.add_argument("--symbol", default="BTCUSDT")
+        sp.add_argument("--interval", default="5m")
+        sp.add_argument("--lookback", type=int, default=200)
+        sp.add_argument("--equity", type=float, default=100.0)
+        sp.add_argument("--mode", default="trend", choices=["trend", "range", "both"])
+        sp.add_argument("--risk", type=float, default=0.02)
+        sp.add_argument("--no-short", action="store_true")
+        sp.add_argument("--synthetic", action="store_true", help="no network")
+        sp.add_argument("--seed", type=int, default=1)
+        return sp
+
+    s = common(sub.add_parser("scan", help="read the chart once"))
+    s.add_argument("--up", action="store_true", default=True)
+    s.add_argument("--svg", default="", help="write the chart to this file")
+    s.set_defaults(func=cmd_scan)
+
+    b = common(sub.add_parser("backtest", help="replay history"))
+    b.add_argument("--bars", type=int, default=1000)
+    b.set_defaults(func=cmd_backtest)
+
+    r = common(sub.add_parser("run", help="the live loop"))
+    r.add_argument("--every", type=float, default=30.0)
+    r.add_argument("--steps", type=int, default=20)
+    r.add_argument("--live", action="store_true")
+    r.add_argument("--testnet", action="store_true", default=True)
+    r.add_argument("--i-understand-this-can-lose-money", action="store_true")
+    r.set_defaults(func=cmd_run)
+
+    v = common(sub.add_parser("serve", help="dashboard"))
+    v.add_argument("--port", type=int, default=8100)
+    v.add_argument("--host", default="0.0.0.0")
+    v.add_argument("--every", type=float, default=5.0)
+    v.set_defaults(func=cmd_serve)
+
+    w = sub.add_parser("webhook", help="receive TradingView alerts")
+    w.add_argument("--port", type=int, default=8200)
+    w.add_argument("--host", default="0.0.0.0")
+    w.add_argument("--secret", default=os.environ.get("TV_SECRET", ""))
+    w.add_argument("--live", action="store_true")
+    w.add_argument("--equity", type=float, default=100.0)
+    w.add_argument("--risk", type=float, default=0.02)
+    w.add_argument("--stop-pct", type=float, default=0.004, dest="stop_pct")
+    w.set_defaults(func=cmd_webhook)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = build_parser()
+    args = p.parse_args(argv)
+    if not getattr(args, "func", None):
+        p.print_help()
+        return 0
+    return args.func(args)
