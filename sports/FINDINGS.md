@@ -165,3 +165,119 @@ Worth recording because each produced a plausible number rather than an error:
    `model.predict` after the ratings had absorbed the test results turned a
    −7.1% return into +2.1%. Roughly nine points of pure look-ahead, and it
    looked like the strategy working.
+
+---
+
+# The 50-65c band, tested
+
+You asked for a system that buys only legs priced 50-65c. That is a specific,
+checkable claim, so I checked it instead of assuming it. This section is the
+answer, and it is **not the answer you were hoping for**.
+
+## First, the arithmetic you cannot argue with
+
+Buy a share at price `p`. It pays 1 or 0. Polymarket charges a taker fee on
+notional of roughly `0.07 * p * (1 - p)` per share. So:
+
+| price | fee | breakeven win rate | profit per $1 on a win |
+|-------|-----|--------------------|------------------------|
+| 50c | 1.75c | 51.8% | +0.93 |
+| 55c | 1.73c | 56.7% | +0.74 |
+| 58.5c | 1.70c | 60.2% | +0.64 |
+| 60c | 1.68c | 61.7% | +0.59 |
+| 65c | 1.59c | 66.6% | +0.48 |
+
+**In this band you must win roughly 52-67% of the time just to break even.** A
+model that is "57% accurate" is a losing model at 58.5c. This is the number that
+matters, and it is why accuracy is a misleading headline.
+
+## Soccer, three-way, measured per leg
+
+21,659 matches, five leagues, train before 2020-07-01, test after. Prices are the
+closing line plus its actual overround, not the de-vigged fair value.
+
+| band | legs | avg price | hit rate | ROI per trade |
+|------|------|-----------|----------|---------------|
+| 35-50c | 4,691 | 43.1c | 42.21% | **-2.06%** |
+| **50-65c** | **2,928** | **58.6c** | **57.68%** | **-1.37%** |
+| 65-80c | 1,498 | 73.5c | 74.17% | +1.20% |
+
+Two things to read from this:
+
+1. **The band is efficient.** At 58.6c the market delivers 57.68%. The price is
+   almost exactly right, and the overround is what kills you. There is no free
+   money sitting in the middle of the book.
+2. **The only positive band is 65-80c** (+1.20% on 1,498 legs). That is the
+   favourite-longshot bias, it is small, and it is *not* the band you asked for.
+
+## And the model actively hurts inside the band
+
+Filtering to legs where the model thinks the price is too low made it worse,
+not better:
+
+| filter | legs | model says | actually won | ROI |
+|--------|------|-----------|--------------|-----|
+| model > price by 0c | 1,372 | 63.7% | 55.9% | **-4.08%** |
+| model > price by 2c | 1,062 | 64.8% | 55.1% | **-5.18%** |
+| model > price by 4c | 763 | 66.0% | 55.2% | **-4.68%** |
+| model > price by 6c | 500 | 67.5% | 55.4% | **-3.75%** |
+
+When the model disagrees with the close inside this band, **the model is wrong
+by about 8 points on average.** Its confidence is the tell. This is not a small
+effect; it is the single clearest result in this whole file.
+
+## Tennis, two-way, and a bug that mattered
+
+79,299 ATP matches, 2000-2026. Held out 2024 onward: 7,261 matches where both
+players already had a history.
+
+Raw Elo got 63.79% accuracy and log loss 0.6402. But in the band it claimed
+57.46% and delivered **54.35%** -- overconfident by 3.1 points, same direction as
+soccer.
+
+One parameter fixes it. Shrink the logit toward 50% by a factor fitted on
+2022-2023 and frozen:
+
+    calibrated = sigmoid(0.68 * logit(raw))
+
+Out of sample on 2024+:
+
+| metric | raw | calibrated |
+|--------|-----|------------|
+| band prediction | 57.46% | 57.18% |
+| band actual | 54.35% | **57.13%** |
+| band n | 3,146 | 4,353 |
+| 95% CI | [52.6, 56.1] | **[55.7, 58.6]** |
+| log loss | 0.6402 | **0.6309** |
+
+The calibrated tennis model is honest inside the band across every bucket
+(all within 1.8 points). That makes it **safe to use as a probability** -- and
+it still does not make the band pay, because being calibrated at 57% when the
+price is 58.5c is a 1.5c loss per trade.
+
+### The bug worth remembering
+
+The first version of the tennis update dropped the *loser* by
+`k * (1 - E_winner)` instead of `k * E_loser`. For a 1900-vs-1500 pairing that
+punished the underdog by **119 rating points instead of 12** -- ten times too
+hard. Symptoms: 63.79% accuracy alongside a log loss of 0.1934, which is
+arithmetically impossible, and a bucket where the model was "89% confident" and
+won 60.69%.
+
+Lesson: when two aggregate metrics contradict each other, one of them is a bug.
+I caught it only because accuracy and log loss refused to agree.
+
+## So what is this system actually good for?
+
+It is a **calibrated probability engine with a band filter**, not an edge.
+
+- Use `sports predict` for a three-way soccer read.
+- Use `sports scan` for two-way tennis, with the shrink applied and inactivity
+  decay so retired players stop generating fake edges.
+- The band filter will mostly say **do nothing**, and that is the correct output.
+
+What it will not do is beat a sharp closing line, because the measurements above
+say it cannot. The thing that pays in this repo remains what it always was:
+buying when a *price* is demonstrably below a *sharp de-vigged probability*,
+which is `sports sides` and `sports/edge.py`, and which requires a real
+disagreement with a real book -- not a better guess at team strength.
