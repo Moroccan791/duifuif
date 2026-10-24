@@ -13,6 +13,86 @@ you a bot. What it will do is:
 * tell you, in dollars, when a signal is not an edge
 * refuse to trade when the risk gates say stop
 
+
+---
+
+## 0. The question behind the question
+
+Two asks keep arriving together: *"is trading profitable?"* and *"build me
+something that makes a lot of money a month."* They have very different answers.
+
+### Is trading profitable?
+
+Yes — for a very small number of people, and the published base rates are brutal:
+
+| Source | Finding |
+|---|---|
+| Chague, De-Losso & Giovannetti (Brazil, 19,646 traders) | **97%** of those who persisted 300+ days lost money. 1.1% beat minimum wage. 0.5% beat a bank teller's salary. |
+| Barber, Lee, Liu & Odean (Taiwan, every trade 1992–2006) | **<1%** predictably profitable net of fees. 93% gone within five years. |
+| ESMA (EU, regulated brokers) | **74–89%** of retail CFD accounts lose money, average loss €1,600–29,000. |
+| SEBI (India) | **91.1%** of retail derivatives traders lost money in FY2024. |
+
+One statistic in that literature is worth more than all the rest: the probability
+that a trader who had a profitable year followed it with another profitable year
+was **6.6%**, while the probability that a losing year was followed by another
+losing year was **67%**. Profitable years are mostly luck; unprofitable ones are
+mostly skill.
+
+The people making life-changing money exist. You are seeing a survivorship-biased
+sample of them, because the other 97% do not post.
+
+### The arithmetic of "a lot per month"
+
+`python -m pm5m goal --capital 1000 --target 5000`:
+
+```
+Target: $5,000/month from $1,000 capital.
+That requires 500.00% per month, or 217,678,233,500% per year, compounded.
+Scale: not achievable by any known strategy; the arithmetic is negative.
+```
+
+That is not pessimism, it is division. And it is not fixed by choosing a
+different venue — Binance, Polymarket and the NYSE are the same arithmetic.
+
+What the same $5,000/month needs at honest returns:
+
+| return | capital required |
+|---|---|
+| 8% / yr (very good) | $777,000 |
+| 15% / yr (excellent) | $427,000 |
+| 25% / yr (exceptional) | $266,000 |
+
+**This is the central point: in trading, income comes from capital, not from the
+bot.** A genuinely excellent 20%/yr strategy on $1,000 turns it into about $1,190
+in a year. Leveraged 20x to chase $5,000/month instead, the median outcome is
+**$4** and the probability of ruin is **78%**:
+
+| | median outcome | P(ruin) |
+|---|---|---|
+| excellent strategy, 1x | $1,190 | 0.0% |
+| exceptional strategy, 1x | $1,320 | 0.0% |
+| leveraged 20x to chase target | **$4** | **78%** |
+
+Leverage raises the odds of a good month and raises the odds of ruin faster. The
+size needed to hit an aggressive target is the size that makes one bad month
+terminal. That is not a strategy, it is a bet on the ordering of your bad months.
+
+### So what do I actually build?
+
+Not a money printer — that does not exist, and building something that claims to
+be one would cost you money rather than make it. What is genuinely worth
+building, and what this repo does:
+
+1. **Measure whether an edge exists** before risking anything (`record`, `backtest`).
+2. **Refuse to trade when it does not** (`band`, `goal`, risk gates).
+3. **Price costs correctly**, because fees are what separate a real edge from a
+   imagined one (`fees`, `band`).
+4. **Tell the truth in advance** about what a given target requires (`goal`).
+
+The honest ladder from here, cheapest first: build capital in something with a
+real, boring edge (index funds, a job); paper-trade this thing until your fills
+show a measurable edge; only then risk money you can lose entirely.
+
 ---
 
 ## 1. The economics, with numbers
@@ -172,10 +252,11 @@ visible in `pm5m report`.
 | Gamma/CLOB/WS clients | `pm5m/feeds.py` | complete |
 | Spot feeds (Binance/Coinbase/OKX/Bybit) | `pm5m/spot.py` | complete |
 | Mid-range maker strategy (50–60c) | `pm5m/maker.py` | complete, tested |
+| Goal arithmetic + ruin Monte Carlo | `pm5m/goals.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
 | Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-60 tests. Two of them exist specifically because the simulator once reported a
+72 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 

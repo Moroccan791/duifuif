@@ -36,6 +36,54 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_goal(args: argparse.Namespace) -> int:
+    """The arithmetic of a monthly income target."""
+    from .goals import analyse_goal, simulate_outcomes  # noqa: F401
+
+    rep = analyse_goal(args.capital, args.target)
+    print("=" * 78)
+    print("WHAT A MONTHLY INCOME TARGET ACTUALLY REQUIRES")
+    print("=" * 78)
+    print(rep.pretty())
+
+    print()
+    print("=" * 78)
+    print("WHAT A GENUINELY GOOD STRATEGY LOOKS LIKE OVER 12 MONTHS")
+    print("=" * 78)
+    print(
+        "Assumption: 20%/yr return, 15%/yr volatility, fat-tailed monthly shocks.\n"
+        "That is a *good* fund. Here is its actual distribution of outcomes.\n"
+    )
+    for label, ar, vol in (
+        ("excellent strategy (20%/yr, 15% vol)", 0.20, 0.15),
+        ("exceptional strategy (35%/yr, 25% vol)", 0.35, 0.25),
+        ("leveraged to chase the target", 0.20, 0.15),
+    ):
+        lev = 1.0
+        if "leveraged" in label:
+            lev = max(1.0, min(20.0, rep.required_annual / 0.20)) if rep.required_annual > 0 else 1.0
+        out = simulate_outcomes(
+            args.capital,
+            ar,
+            vol * lev,
+            months=12,
+            monthly_target=args.target,
+            fat_tails=4.0,
+        )
+        print(f"--- {label}" + (f"  ({lev:.1f}x)" if lev > 1 else "") + " ---")
+        print(out.pretty(args.capital, args.target))
+        print()
+
+    print(
+        "The column that matters is 'probability of hitting target'. A good\n"
+        "strategy on small capital hits a large monthly target roughly never.\n"
+        "Leverage raises the odds of a good month and raises the odds of ruin\n"
+        "faster. That trade is not a strategy, it is a wager on the order of\n"
+        "your bad months."
+    )
+    return 0
+
+
 def cmd_band(args: argparse.Namespace) -> int:
     """The economics of the price band you want to trade in."""
     settings = Settings()
@@ -295,6 +343,11 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    g = sub.add_parser("goal", help="what a monthly income target requires")
+    g.add_argument("--capital", type=float, default=1000.0)
+    g.add_argument("--target", type=float, default=5000.0, help="monthly target in USD")
+    g.set_defaults(func=cmd_goal)
 
     b = sub.add_parser("band", help="taker vs maker economics by price")
     b.set_defaults(func=cmd_band)
