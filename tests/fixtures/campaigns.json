@@ -1,0 +1,7 @@
+[
+ {"name":"Big Rate Small Reach","cpm":5.0,"budgetLeft":40000,"creators":3200,"approvalRate":0.55,"platforms":["tiktok"]},
+ {"name":"Hype Podcast","cpm":2.0,"budgetLeft":9000,"creators":40,"approvalRate":0.85,"platforms":["tiktok","reels"]},
+ {"name":"Saturated Clipper Farm","cpm":4.0,"budgetLeft":120000,"creators":4800,"approvalRate":0.6},
+ {"name":"Bonus Heavy","cpm":1.2,"budgetLeft":6000,"creators":120,"approvalRate":0.9,"bonus":8.0},
+ {"name":"Dead Pool","cpm":3.0,"budgetLeft":300,"creators":900,"approvalRate":0.5}
+]
