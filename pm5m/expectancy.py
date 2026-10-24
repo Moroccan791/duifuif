@@ -161,13 +161,20 @@ class Expectancy:
     mean_return: float
     total_pnl: float
     boot_ci: tuple[float, float] = (0.0, 0.0)
+    # One-sided 95% lower bound on expectancy. This is the number that decides
+    # whether an edge is established: "is expectancy > 0" is a one-sided
+    # question. Reporting a two-sided interval beside a one-sided test lets the
+    # page say "significant" while the interval visibly contains zero -- a
+    # contradiction that destroys trust exactly where it matters most.
+    ci_low_1s: float = 0.0
     required_n: int = 0
     half_split_delta: float = 0.0
     notes: list[str] = field(default_factory=list)
 
     @property
     def significant(self) -> bool:
-        return self.p_value < 0.05 and self.mean_pnl > 0
+        """One-sided test, so the criterion matches the reported interval."""
+        return self.p_value < 0.05 and self.mean_pnl > 0 and self.ci_low_1s > 0
 
     def verdict(self) -> str:
         if self.n < 30:
@@ -183,7 +190,7 @@ class Expectancy:
         if self.significant:
             return (
                 f"EDGE SUPPORTED - {self.mean_pnl:+.3f}/trade, "
-                f"p={self.p_value:.4f}, 95% CI [{self.ci_low:+.3f}, {self.ci_high:+.3f}]"
+                f"p={self.p_value:.4f}, 95% lower bound {self.ci_low_1s:+.3f}"
             )
         if self.mean_pnl > 0:
             return (
@@ -203,7 +210,8 @@ class Expectancy:
             f"std error of mean      : ${self.se_pnl:.3f}",
             f"t-statistic            : {self.t_stat:+.2f}",
             f"p-value (one-sided)    : {self.p_value:.4f}",
-            f"95% CI for expectancy  : [${self.ci_low:+.3f}, ${self.ci_high:+.3f}]",
+            f"95% CI for expectancy  : [${self.ci_low:+.3f}, ${self.ci_high:+.3f}] (two-sided)",
+            f"95% LOWER BOUND        : ${self.ci_low_1s:+.3f}  <- decides significance",
             f"bootstrap 95% CI       : [${self.boot_ci[0]:+.3f}, ${self.boot_ci[1]:+.3f}]",
             f"win rate               : {self.win_rate:.1%} "
             f"(95% CI {self.win_rate_ci[0]:.1%}-{self.win_rate_ci[1]:.1%})",
@@ -259,7 +267,7 @@ def analyze(
     n = len(trades)
     if n == 0:
         return Expectancy(
-            0, 0, 0, 0, 0, 1.0, 0, 0, 0, (0, 0), 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 1.0, 0, 0, 0, (0, 0), 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
             notes=["no completed trades"],
         )
 
@@ -279,8 +287,10 @@ def analyze(
     if n > 1:
         crit = t_ppf(0.975, n - 1)
         ci = (mean - crit * se, mean + crit * se)
+        ci_1s = mean - t_ppf(0.95, n - 1) * se
     else:
         ci = (mean, mean)
+        ci_1s = mean
 
     wins = [t.pnl for t in trades if t.pnl > 0]
     losses = [t.pnl for t in trades if t.pnl <= 0]
@@ -346,6 +356,7 @@ def analyze(
         p_value=p_value,
         ci_low=ci[0],
         ci_high=ci[1],
+        ci_low_1s=ci_1s,
         win_rate=len(wins) / n,
         win_rate_ci=_wilson(len(wins), n),
         avg_win=avg_win,
@@ -375,6 +386,9 @@ def conservative_kelly(exp: Expectancy, fraction: float = 0.25) -> float:
     """
     c = exp.breakeven_win_rate
     if c <= 0 or c >= 1:
+        return 0.0
+    if exp.ci_low_1s <= 0:
+        # No established edge -> no size. This is the whole point of the function.
         return 0.0
     p_low = exp.win_rate_ci[0]
     f_star = (p_low - c) / (1.0 - c)

@@ -248,6 +248,47 @@ One cell did show **66.7%**: 18 trades, +$71, p=0.166. That's the number people
 post. It is noise, and it will revert to the price you paid as the sample grows.
 If you ever see a 70% win rate, **count the trades first**.
 
+
+---
+
+## 0.8 The cockpit — and the one chart that matters
+
+`python -m pm5m dashboard --port 8000`, then open the URL. No CDN, no build step,
+stdlib only.
+
+Six panels: trade count, win rate vs break-even (with the 95% CI band),
+expectancy with its **one-sided 95% lower bound**, p-value, total P&L, and the
+trades-needed-for-power figure — plus an equity curve, an outcome histogram, and
+a per-window panel.
+
+### Why the charts matter more than the tables
+
+Two traders look at the same chart, take the same trade, and one wins while the
+other loses. The chart is identical for both. What differs is **entry price, fee,
+and size** — none of which the chart shows. The chart is the market's opinion;
+your P&L is whether that opinion was wrong. You need both, and the chart alone is
+precisely what fools people.
+
+### But the normal price chart is the WRONG chart here
+
+This is the part that is specific to these markets, and it is now drawn
+explicitly. Settlement compares **the average of the path** against the open —
+not the last tick. So a window can finish above the open and still resolve Down:
+
+```
+open 100,000 | average  99,967 | last 100,399  ->  RESOLVED DOWN (chart says UP)
+open 100,000 | average 100,038 | last  99,956  ->  RESOLVED UP   (chart says DOWN)
+open 100,000 | average 100,191 | last  99,890  ->  RESOLVED UP   (chart says DOWN)
+```
+
+**Every one of those is a trade a candlestick watcher loses and this model wins.**
+That is the entire edge, and it is invisible on a standard price chart. The
+dashboard draws the path, the running average, the open line, and the resolution
+side by side so the disagreement is unmissable.
+
+Once `pm5m record` has run, the dashboard reads real settlements from the store
+and marks its data source `store` instead of `demo`.
+
 ---
 
 ## 1. The economics, with numbers
@@ -411,10 +452,11 @@ visible in `pm5m report`.
 | Expectancy / significance testing | `pm5m/expectancy.py` | complete, tested |
 | Win-rate vs profit decoupling | `pm5m/winrate.py` | complete, tested |
 | Selectivity / win-rate ceiling search | `pm5m/selectivity.py` | complete, tested |
+| Visual cockpit (stdlib HTTP + canvas) | `pm5m/dashboard.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
 | Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-121 tests. Two of them exist specifically because the simulator once reported a
+124 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 

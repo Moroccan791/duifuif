@@ -223,3 +223,33 @@ def test_trades_survive_a_store_round_trip(tmp_path):
     assert r.won is False
     assert r.pnl < 0
     assert r.fee > 0
+
+
+# ---- the significance criterion must not contradict the reported interval ---
+def test_significance_matches_the_reported_lower_bound():
+    """If the tool says 'significant', the 95% lower bound must clear zero.
+
+    A one-sided test reported next to a two-sided interval produced a page that
+    said EDGE SUPPORTED while the visible interval contained zero. That is the
+    kind of contradiction that makes a risk tool untrustworthy.
+    """
+    for n, wr, seed in ((240, 0.60, 11), (600, 0.70, 2), (400, 0.58, 11), (300, 0.45, 9)):
+        exp = analyze(_trades(n, wr, seed=seed))
+        assert exp.significant == (exp.p_value < 0.05 and exp.ci_low_1s > 0)
+        if exp.significant:
+            assert exp.ci_low_1s > 0
+        else:
+            assert exp.ci_low_1s <= 0
+
+
+def test_one_sided_bound_is_above_the_two_sided_lower_bound():
+    exp = analyze(_trades(300, 0.62, seed=5))
+    assert exp.ci_low_1s > exp.ci_low
+    assert exp.ci_low_1s < exp.mean_pnl
+
+
+def test_conservative_kelly_needs_an_established_edge():
+    """No one-sided significance -> no size at all."""
+    weak = analyze(_trades(60, 0.62, seed=8))
+    assert weak.ci_low_1s <= 0
+    assert conservative_kelly(weak) == 0.0

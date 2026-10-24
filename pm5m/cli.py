@@ -36,6 +36,27 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Serve the cockpit. Graphs, not tables."""
+    from .dashboard import DashboardServer
+    from .storage import Store
+
+    store = None
+    if not args.demo:
+        try:
+            store = Store(Settings().db_path)
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not open store ({exc}); falling back to demo data")
+    srv = DashboardServer(port=args.port, store=store, demo=args.demo)
+    print("serving dashboard - open the URL below (Ctrl-C to stop)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+        srv.stop()
+    return 0
+
+
 def cmd_selectivity(args: argparse.Namespace) -> int:
     """Can selectivity lift the win rate to 70% at 50-60c, and what does it cost?"""
     from .selectivity import HEADER, best_by_profit, highest_win_rate, sweep
@@ -591,6 +612,11 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    dash = sub.add_parser("dashboard", help="serve the visual cockpit")
+    dash.add_argument("--port", type=int, default=8000)
+    dash.add_argument("--demo", action="store_true", help="use synthetic data even if a store exists")
+    dash.set_defaults(func=cmd_dashboard)
 
     sel = sub.add_parser("selectivity", help="can selectivity reach 70% win rate at 50-60c?")
     sel.add_argument("--windows", type=int, default=250)
