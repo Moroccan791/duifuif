@@ -36,6 +36,95 @@ def _band_settings(mode: str, lo: float, hi: float) -> Settings:
     )
 
 
+def cmd_winrate(args: argparse.Namespace) -> int:
+    """Can a 70-80% win rate be genuine and profitable?"""
+    from .winrate import (
+        accuracy_you_need,
+        expected_longest_loss_streak,
+        prob_streak_at_least,
+        same_winrate_scenarios,
+        table,
+    )
+
+    print("=" * 92)
+    print("CAN YOU HAVE A GENUINE 70-80% WIN RATE?  YES -- AND IT MEANS NOTHING")
+    print("=" * 92)
+    print(
+        "In a binary market the win rate you get is set by the price you pay.\n"
+        "Buy at 78c and you win ~78% of the time because that is what the market\n"
+        "already believes. A high win rate is a receipt, not an achievement.\n"
+    )
+
+    header = (
+        f"{'price':>6} {'market says':>11} {'break-even':>11} {'edge needed':>12} "
+        f"{'loss/win':>9} {'fee %stake':>10}  verdict"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in table():
+        print(
+            f"{row.price*100:5.0f}c {row.fair_win_rate*100:10.0f}% "
+            f"{row.break_even*100:10.2f}% {row.edge_needed_pp:10.2f}pp "
+            f"{row.loss_win_ratio:8.1f}x {row.fee_pct_of_stake:9.2f}%  {row.verdict}"
+        )
+
+    print()
+    print("=" * 92)
+    print("THE SAME WIN RATE, THREE PRICES, OPPOSITE OUTCOMES")
+    print("=" * 92)
+    for line in same_winrate_scenarios(0.78):
+        print(line)
+
+    print()
+    print("=" * 92)
+    print("WHAT 78c ACCURACY ACTUALLY REQUIRES")
+    print("=" * 92)
+    print(accuracy_you_need(0.78))
+    print(accuracy_you_need(0.60))
+    print()
+    print(
+        "Notice the trade-off: at 60c the fee is 2.80% of stake and you need a\n"
+        "1.68pp edge. At 78c the fee is 1.54% of stake, so you need just 1.20pp.\n"
+        "Higher prices need LESS absolute edge -- but the events are near-certain\n"
+        "and therefore priced by everyone, so finding that edge is harder, and\n"
+        "each loss costs 3.5x a win."
+    )
+
+    print()
+    print("=" * 92)
+    print("THE STREAKS ARE SCHEDULED, NOT UNLUCKY")
+    print("=" * 92)
+    print(
+        "At 78c, a loss is 3.5x a win. Here is what the binomial distribution\n"
+        "guarantees you over a year of trading (1,000 trades):\n"
+    )
+    print(f"{'true win rate':>14} {'longest loss streak':>21} {'P(streak >= 4)':>16} {'P(streak >= 6)':>16}")
+    print("-" * 70)
+    for w in (0.70, 0.78, 0.80, 0.90, 0.95):
+        exp = expected_longest_loss_streak(w, 1000)
+        print(
+            f"{w*100:13.0f}% {exp:20.1f} "
+            f"{prob_streak_at_least(w, 4, 1000):15.1%} "
+            f"{prob_streak_at_least(w, 6, 1000):15.1%}"
+        )
+    print()
+    print(
+        "At a 78% win rate you should EXPECT a run of ~5 losses in a year, and\n"
+        "each of those loses 3.5x what a win earns. A 5-loss run gives back 17\n"
+        "wins. If your sizing assumes the streaks do not happen, that single run\n"
+        "is the one that ends the account -- and it will feel like bad luck\n"
+        "rather than the arithmetic it is."
+    )
+    print()
+    print(
+        "So: 70-80% win rate? Trivially available. Buy at 75-80c. Profitable?\n"
+        "Only if your TRUE accuracy exceeds the price, by more than the fee, and\n"
+        "`pm5m expectancy` proves it -- which took ~1,700 trades for a genuine\n"
+        "edge last time we measured. That is the real bar."
+    )
+    return 0
+
+
 def cmd_expectancy(args: argparse.Namespace) -> int:
     """Is the edge real? The only question that matters before sizing up."""
     from .expectancy import analyze, conservative_kelly
@@ -400,6 +489,9 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm5m", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    wr = sub.add_parser("winrate", help="why a 70-80% win rate means nothing on its own")
+    wr.set_defaults(func=cmd_winrate)
 
     e = sub.add_parser("expectancy", help="is the edge statistically real?")
     e.add_argument("--demo", type=int, default=0, help="simulate N trades instead of using the store")

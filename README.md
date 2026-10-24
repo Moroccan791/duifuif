@@ -150,6 +150,58 @@ That is the entire secret. Not a prediction model — a **decision rule about yo
 own evidence**. It is available to anyone, it costs nothing, and almost nobody
 follows it, which is precisely why it works as an edge on its own.
 
+
+---
+
+## 0.6 "Can we have a genuine 70–80% win rate?"
+
+**Yes. It's trivial. And it tells you nothing.**
+
+`python -m pm5m winrate`. In a binary market the win rate is set by the price you
+pay. Buy at 78¢ and you win ~78% of the time — because that's what the market
+already believes. **A high win rate is a receipt for the price, not evidence of
+skill.**
+
+The proof is that the *same* 78% win rate is profitable or ruinous depending only
+on entry price:
+
+| 78% win rate, 1,000 trades | result |
+|---|---|
+| buy at 60¢ | **+$16,320** |
+| buy at 78¢ | **−$1,201** |
+| buy at 90¢ | **−$12,630** |
+
+Same accuracy. Opposite outcomes. At 60¢ that 78% is an 18-point edge over the
+market. At 90¢ it's an 11-point *deficit*.
+
+| price | market says | you need | loss = | fee |
+|---|---|---|---|---|
+| 60¢ | 60% | 61.68% | 1.5× a win | 2.80% of stake |
+| 78¢ | 78% | 79.20% | 3.5× a win | 1.54% of stake |
+| 90¢ | 90% | 90.63% | 9.0× a win | 0.70% of stake |
+| 98¢ | 98% | 98.14% | 49× a win | 0.14% of stake |
+
+Higher prices need *less* absolute edge — but the events are near-certain, so
+everyone prices them, and each loss costs more. **There is no price where a high
+win rate by itself makes money.**
+
+### The streaks are scheduled
+
+At a 78% win rate over 1,000 trades you should *expect* a run of ~5 losses, each
+costing 3.5× a win. That 5-loss run gives back 17 wins. It isn't bad luck — it's
+the binomial distribution arriving on time. Sizing that assumes streaks won't
+happen is what turns a scheduled event into a terminal one.
+
+### So what actually makes money
+
+```
+expectancy = your true accuracy − all-in cost per share
+```
+
+Nothing else. Win rate is a *property of the price*, and the price is public
+information. What is not public is whether you're better than it — and
+`pm5m expectancy` measures that, which took ~1,700 trades last time we checked.
+
 ---
 
 ## 1. The economics, with numbers
@@ -311,10 +363,11 @@ visible in `pm5m report`.
 | Mid-range maker strategy (50–60c) | `pm5m/maker.py` | complete, tested |
 | Goal arithmetic + ruin Monte Carlo | `pm5m/goals.py` | complete, tested |
 | Expectancy / significance testing | `pm5m/expectancy.py` | complete, tested |
+| Win-rate vs profit decoupling | `pm5m/winrate.py` | complete, tested |
 | Gated live execution | `pm5m/live.py` | complete, **disarmed by default** |
 | Adversarial simulator (4 counterparty models) | `pm5m/sim.py` | complete |
 
-95 tests. Two of them exist specifically because the simulator once reported a
+110 tests. Two of them exist specifically because the simulator once reported a
 9,000% return: the maker believed the window had already closed, and the engine
 was feeding the Up book into the Down decision.
 
